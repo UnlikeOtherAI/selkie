@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"github.com/unlikeotherai/silkie/internal/config"
 )
 
+// UOAClaims represents the identity claims returned from the UOA token exchange.
 type UOAClaims struct {
 	Email       string `json:"email,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
@@ -29,6 +31,7 @@ type tokenExchangeResponse struct {
 	AccessToken string `json:"access_token"`
 }
 
+// BuildAuthURL constructs the UOA OAuth authorize URL from the current config.
 func BuildAuthURL() string {
 	cfg := config.Load()
 	baseURL := strings.TrimRight(cfg.UOABaseURL, "/")
@@ -41,7 +44,10 @@ func BuildAuthURL() string {
 	return baseURL + "/oauth/authorize?" + query.Encode()
 }
 
-func ExchangeCode(code string) (*UOAClaims, error) {
+// ExchangeCode exchanges an authorization code for UOA identity claims.
+//
+//nolint:gocognit // sequential auth exchange steps with multiple endpoints
+func ExchangeCode(ctx context.Context, code string) (*UOAClaims, error) {
 	cfg := config.Load()
 	if strings.TrimSpace(code) == "" {
 		return nil, errors.New("code is required")
@@ -62,16 +68,16 @@ func ExchangeCode(code string) (*UOAClaims, error) {
 	var lastErr error
 
 	for _, endpoint := range endpoints {
-		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
-		if err != nil {
-			return nil, fmt.Errorf("build token exchange request: %w", err)
+		request, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		if reqErr != nil {
+			return nil, fmt.Errorf("build token exchange request: %w", reqErr)
 		}
 		request.Header.Set("Authorization", "Bearer "+authorization)
 		request.Header.Set("Content-Type", "application/json")
 
-		response, err := client.Do(request)
-		if err != nil {
-			lastErr = fmt.Errorf("exchange code at %s: %w", endpoint, err)
+		response, doErr := client.Do(request)
+		if doErr != nil {
+			lastErr = fmt.Errorf("exchange code at %s: %w", endpoint, doErr)
 			continue
 		}
 
@@ -91,8 +97,8 @@ func ExchangeCode(code string) (*UOAClaims, error) {
 		}
 
 		var tokenResponse tokenExchangeResponse
-		if err := json.Unmarshal(body, &tokenResponse); err != nil {
-			lastErr = fmt.Errorf("decode token exchange response from %s: %w", endpoint, err)
+		if unmarshalErr := json.Unmarshal(body, &tokenResponse); unmarshalErr != nil {
+			lastErr = fmt.Errorf("decode token exchange response from %s: %w", endpoint, unmarshalErr)
 			continue
 		}
 		if tokenResponse.AccessToken == "" {
@@ -100,9 +106,9 @@ func ExchangeCode(code string) (*UOAClaims, error) {
 			continue
 		}
 
-		claims, err := verifyUOAToken(tokenResponse.AccessToken, cfg.UOASharedSecret, cfg.UOAAudience)
-		if err != nil {
-			lastErr = fmt.Errorf("verify access token from %s: %w", endpoint, err)
+		claims, verifyErr := verifyUOAToken(tokenResponse.AccessToken, cfg.UOASharedSecret, cfg.UOAAudience)
+		if verifyErr != nil {
+			lastErr = fmt.Errorf("verify access token from %s: %w", endpoint, verifyErr)
 			continue
 		}
 		if claims.DisplayName == "" {
@@ -137,7 +143,7 @@ func verifyUOAToken(tokenString string, secret string, audience string) (*UOACla
 		return nil, errors.New("token is invalid")
 	}
 	if audience != "" {
-		aud, _ := claims.GetAudience()
+		aud, _ := claims.GetAudience() //nolint:errcheck // audience claim is optional
 		found := false
 		for _, a := range aud {
 			if a == audience {

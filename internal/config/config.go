@@ -1,3 +1,4 @@
+// Package config loads environment-based configuration for the silkie server.
 package config
 
 import (
@@ -5,6 +6,7 @@ import (
 	"strconv"
 )
 
+// Config holds all runtime configuration values loaded from the environment.
 type Config struct {
 	UOABaseURL               string
 	UOADomain                string
@@ -26,6 +28,7 @@ type Config struct {
 	OTELExporterOTLPEndpoint string
 }
 
+// Load reads all configuration from environment variables with sensible defaults.
 func Load() Config {
 	return Config{
 		UOABaseURL:               os.Getenv("UOA_BASE_URL"),

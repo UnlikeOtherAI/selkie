@@ -12,19 +12,23 @@ import (
 	"github.com/unlikeotherai/silkie/internal/store"
 )
 
+// CallbackHandler handles the OAuth callback from UOA, upserting the user and issuing a session JWT.
 type CallbackHandler struct {
 	db  *store.DB
 	cfg config.Config
 }
 
+// NewCallbackHandler creates a CallbackHandler with the given database and config.
 func NewCallbackHandler(db *store.DB, cfg config.Config) *CallbackHandler {
 	return &CallbackHandler{db: db, cfg: cfg}
 }
 
+// Mount registers the callback route on the given router.
 func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Get("/auth/callback", h.ServeCallback)
 }
 
+// ServeCallback processes the OAuth callback, exchanges the code, upserts the user, and redirects with a JWT.
 func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -32,7 +36,7 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	uoaClaims, err := ExchangeCode(code)
+	uoaClaims, err := ExchangeCode(r.Context(), code)
 	if err != nil {
 		http.Error(w, "auth failed", http.StatusUnauthorized)
 		return
@@ -58,12 +62,12 @@ func (h *CallbackHandler) upsertUser(ctx context.Context, claims *UOAClaims) (st
 	if err != nil {
 		return "", false, err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after commit
 
-	// Check if this is the very first user
+	// Check if this is the very first user.
 	var count int
-	if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
-		return "", false, err
+	if countErr := tx.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&count); countErr != nil {
+		return "", false, countErr
 	}
 	firstUser := count == 0
 

@@ -1,3 +1,4 @@
+// Package auth provides JWT-based authentication middleware and helpers.
 package auth
 
 import (
@@ -10,6 +11,7 @@ import (
 	"github.com/unlikeotherai/silkie/internal/config"
 )
 
+// Claims holds the authenticated user identity extracted from a JWT.
 type Claims struct {
 	Sub     string
 	IsSuper bool
@@ -24,6 +26,7 @@ type sessionClaims struct {
 	jwt.RegisteredClaims
 }
 
+// Middleware returns an HTTP middleware that validates Bearer JWTs and injects Claims into context.
 func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 	secret := []byte(cfg.InternalSessionSecret)
 
@@ -65,6 +68,7 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 	}
 }
 
+// ClaimsFromContext retrieves the authenticated Claims from the request context.
 func ClaimsFromContext(ctx context.Context) (Claims, bool) {
 	claims, ok := ctx.Value(claimsContextKey).(Claims)
 	return claims, ok
@@ -73,5 +77,5 @@ func ClaimsFromContext(ctx context.Context) (Claims, bool) {
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"}) //nolint:errcheck // best-effort write to HTTP response
 }

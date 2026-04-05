@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/unlikeotherai/silkie/internal/auth"
 	"go.uber.org/zap"
@@ -36,10 +35,7 @@ type pairCodeRecord struct {
 	RequestedAgentVersion string
 }
 
-func (h *Handler) mountPairClaim(r chi.Router) {
-	r.Post("/v1/auth/pair/claim", h.pairClaim)
-}
-
+//nolint:gocyclo // linear multi-step claim process is clearer as one function
 func (h *Handler) pairClaim(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -67,7 +63,7 @@ func (h *Handler) pairClaim(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
 		return
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after commit
 
 	var pc pairCodeRecord
 	err = tx.QueryRow(ctx, `
@@ -107,7 +103,7 @@ WHERE code_hash = sha256($1::bytea)
 	}
 
 	credBytes := make([]byte, 32)
-	if _, err := rand.Read(credBytes); err != nil {
+	if _, randErr := rand.Read(credBytes); randErr != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate credential")
 		return
 	}
@@ -153,9 +149,9 @@ VALUES ($1, 1, $2, 'active')
 
 	var overlayIP *string
 	if h.overlay != nil {
-		ip, err := h.overlay.AllocateTx(ctx, tx, deviceID)
-		if err != nil {
-			h.logger.Error("allocate overlay ip", zap.Error(err), zap.String("device_id", deviceID))
+		ip, allocErr := h.overlay.AllocateTx(ctx, tx, deviceID)
+		if allocErr != nil {
+			h.logger.Error("allocate overlay ip", zap.Error(allocErr), zap.String("device_id", deviceID))
 			writeError(w, http.StatusInternalServerError, "failed to allocate overlay ip")
 			return
 		}
@@ -185,15 +181,4 @@ WHERE id = $3
 		OverlayIP:  overlayIP,
 		Credential: credential,
 	})
-}
-
-// ensureUser looks up a user by their JWT subject (internal UUID).
-// The subject in silkie JWTs is already the internal user UUID.
-func ensureUser(ctx context.Context, tx pgx.Tx, userID string) (string, error) {
-	var id string
-	err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1`, userID).Scan(&id)
-	if err != nil {
-		return "", err
-	}
-	return id, nil
 }

@@ -1,3 +1,4 @@
+// Package store provides PostgreSQL and Redis persistence adapters for silkie.
 package store
 
 import (
@@ -14,10 +15,12 @@ import (
 
 const migrationLockID int64 = 8246351001
 
+// DB wraps a pgxpool.Pool for database access.
 type DB struct {
 	Pool *pgxpool.Pool
 }
 
+// OpenDB creates a new connection pool and verifies connectivity.
 func OpenDB(ctx context.Context, databaseURL string) (*DB, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -40,6 +43,7 @@ func OpenDB(ctx context.Context, databaseURL string) (*DB, error) {
 	return &DB{Pool: pool}, nil
 }
 
+// Close shuts down the underlying connection pool.
 func (db *DB) Close() {
 	if db == nil || db.Pool == nil {
 		return
@@ -48,10 +52,14 @@ func (db *DB) Close() {
 	db.Pool.Close()
 }
 
+// Ping checks database connectivity.
 func (db *DB) Ping(ctx context.Context) error {
 	return db.Pool.Ping(ctx)
 }
 
+// RunMigrations applies all pending SQL migrations from the given directory.
+//
+//nolint:gocognit,gocyclo // sequential migration steps are clearer as one function
 func (db *DB) RunMigrations(ctx context.Context, dir string) error {
 	migrationDir, err := resolveMigrationDir(dir)
 	if err != nil {
@@ -64,14 +72,14 @@ func (db *DB) RunMigrations(ctx context.Context, dir string) error {
 	}
 	defer conn.Release()
 
-	if _, err := conn.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"); err != nil {
-		return fmt.Errorf("ensure schema_migrations: %w", err)
+	if _, execErr := conn.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"); execErr != nil {
+		return fmt.Errorf("ensure schema_migrations: %w", execErr)
 	}
 
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); err != nil {
-		return fmt.Errorf("acquire migration lock: %w", err)
+	if _, lockErr := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); lockErr != nil {
+		return fmt.Errorf("acquire migration lock: %w", lockErr)
 	}
-	defer conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockID)
+	defer conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", migrationLockID) //nolint:errcheck // best-effort advisory unlock
 
 	entries, err := os.ReadDir(migrationDir)
 	if err != nil {
@@ -89,35 +97,35 @@ func (db *DB) RunMigrations(ctx context.Context, dir string) error {
 
 	for _, filename := range filenames {
 		var applied bool
-		if err := conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename = $1)", filename).Scan(&applied); err != nil {
-			return fmt.Errorf("check migration %s: %w", filename, err)
+		if scanErr := conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename = $1)", filename).Scan(&applied); scanErr != nil {
+			return fmt.Errorf("check migration %s: %w", filename, scanErr)
 		}
 		if applied {
 			continue
 		}
 
-		contents, err := os.ReadFile(filepath.Join(migrationDir, filename))
-		if err != nil {
-			return fmt.Errorf("read migration %s: %w", filename, err)
+		contents, readErr := os.ReadFile(filepath.Join(migrationDir, filename)) //nolint:gosec // G304: paths are controlled server-side, not user input
+		if readErr != nil {
+			return fmt.Errorf("read migration %s: %w", filename, readErr)
 		}
 
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			return fmt.Errorf("begin migration %s: %w", filename, err)
+		tx, beginErr := conn.Begin(ctx)
+		if beginErr != nil {
+			return fmt.Errorf("begin migration %s: %w", filename, beginErr)
 		}
 
-		if _, err := tx.Exec(ctx, string(contents)); err != nil {
-			tx.Rollback(ctx)
-			return fmt.Errorf("apply migration %s: %w", filename, err)
+		if _, execErr := tx.Exec(ctx, string(contents)); execErr != nil {
+			tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after exec failure
+			return fmt.Errorf("apply migration %s: %w", filename, execErr)
 		}
 
-		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (filename) VALUES ($1)", filename); err != nil {
-			tx.Rollback(ctx)
-			return fmt.Errorf("record migration %s: %w", filename, err)
+		if _, execErr := tx.Exec(ctx, "INSERT INTO schema_migrations (filename) VALUES ($1)", filename); execErr != nil {
+			tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after exec failure
+			return fmt.Errorf("record migration %s: %w", filename, execErr)
 		}
 
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit migration %s: %w", filename, err)
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return fmt.Errorf("commit migration %s: %w", filename, commitErr)
 		}
 	}
 

@@ -1,3 +1,4 @@
+// Package devices handles device registration, pairing, heartbeats, and lifecycle.
 package devices
 
 import (
@@ -19,6 +20,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Handler serves device-related HTTP endpoints.
 type Handler struct {
 	db      *store.DB
 	logger  *zap.Logger
@@ -26,6 +28,7 @@ type Handler struct {
 	overlay *overlay.Allocator
 }
 
+// New creates a devices Handler with the given dependencies.
 func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -34,6 +37,7 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc}
 }
 
+// Mount registers device routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
@@ -323,7 +327,7 @@ func decodeJSON(r *http.Request, dst any) error {
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_ = json.NewEncoder(w).Encode(value) //nolint:errcheck // best-effort write to HTTP response
 }
 
 func writeRawJSON(w http.ResponseWriter, status int, payload []byte) {
@@ -340,9 +344,9 @@ func randomCode(length int) (string, error) {
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 	chars := make([]byte, length)
-	max := big.NewInt(int64(len(alphabet)))
+	bound := big.NewInt(int64(len(alphabet)))
 	for i := range chars {
-		n, err := crand.Int(crand.Reader, max)
+		n, err := crand.Int(crand.Reader, bound)
 		if err != nil {
 			return "", err
 		}

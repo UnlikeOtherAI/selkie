@@ -1,3 +1,4 @@
+// Package sessions manages WebRTC signaling sessions and device event streams.
 package sessions
 
 import (
@@ -17,6 +18,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Handler serves session-related HTTP endpoints.
 type Handler struct {
 	rdb    *store.Redis
 	db     *store.DB
@@ -24,6 +26,7 @@ type Handler struct {
 	cfg    config.Config
 }
 
+// New creates a sessions Handler with the given dependencies.
 func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -32,6 +35,7 @@ func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config) 
 	return &Handler{db: db, rdb: rdb, logger: logger, cfg: cfg}
 }
 
+// Mount registers session routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
@@ -123,7 +127,7 @@ func (h *Handler) handleSessionCandidates(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	column := ""
+	var column string
 	switch req.Role {
 	case "requester":
 		column = "requester_candidate_set"
@@ -231,7 +235,7 @@ func (h *Handler) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID)
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID) //nolint:errcheck // best-effort SSE write
 	flusher.Flush()
 
 	ticker := time.NewTicker(25 * time.Second)
@@ -242,7 +246,7 @@ func (h *Handler) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			_, _ = io.WriteString(w, ": keepalive\n\n")
+			_, _ = io.WriteString(w, ": keepalive\n\n") //nolint:errcheck // best-effort SSE keepalive
 			flusher.Flush()
 		}
 	}
@@ -268,7 +272,7 @@ func decodeJSON(r *http.Request, dst any) error {
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_ = json.NewEncoder(w).Encode(value) //nolint:errcheck // best-effort write to HTTP response
 }
 
 func writeRawJSON(w http.ResponseWriter, status int, payload []byte) {

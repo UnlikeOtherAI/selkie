@@ -1,3 +1,4 @@
+// Package main is the entry point for the silkie control-plane server.
 package main
 
 import (
@@ -15,9 +16,9 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/unlikeotherai/silkie/internal/config"
 	"github.com/unlikeotherai/silkie/internal/admin"
 	"github.com/unlikeotherai/silkie/internal/auth"
+	"github.com/unlikeotherai/silkie/internal/config"
 	"github.com/unlikeotherai/silkie/internal/devices"
 	"github.com/unlikeotherai/silkie/internal/overlay"
 	"github.com/unlikeotherai/silkie/internal/sessions"
@@ -27,7 +28,7 @@ import (
 func main() {
 	cfg := config.Load()
 	logger := buildLogger(cfg.LogLevel)
-	defer logger.Sync() //nolint:errcheck
+	defer logger.Sync() //nolint:errcheck // best-effort flush on exit
 
 	ctx := context.Background()
 	if err := runServe(ctx, cfg, logger); err != nil {
@@ -41,8 +42,8 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
-	if err := db.RunMigrations(ctx, "migrations"); err != nil {
-		return fmt.Errorf("run migrations: %w", err)
+	if migErr := db.RunMigrations(ctx, "migrations"); migErr != nil {
+		return fmt.Errorf("run migrations: %w", migErr)
 	}
 	logger.Info("migrations applied")
 
@@ -50,7 +51,7 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 	if err != nil {
 		return fmt.Errorf("open redis: %w", err)
 	}
-	defer rdb.Close() //nolint:errcheck
+	defer rdb.Close() //nolint:errcheck // best-effort close on shutdown
 
 	var overlayAlloc *overlay.Allocator
 	if cfg.WGOverlayCIDR != "" {
@@ -67,7 +68,7 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok")) //nolint:errcheck
+		w.Write([]byte("ok"))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
 		if !ready.Load() {
@@ -76,16 +77,16 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		}
 		pCtx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
 		defer cancel()
-		if err := db.Ping(pCtx); err != nil {
+		if pingErr := db.Ping(pCtx); pingErr != nil {
 			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		if err := rdb.Ping(pCtx); err != nil {
+		if pingErr := rdb.Ping(pCtx); pingErr != nil {
 			http.Error(w, "redis unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ready")) //nolint:errcheck
+		w.Write([]byte("ready"))
 	})
 
 	auth.NewCallbackHandler(db, cfg).Mount(r)
@@ -102,8 +103,8 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("listening", zap.Int("port", cfg.ServerPort))
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
+		if listenErr := srv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
+			errCh <- listenErr
 		}
 		close(errCh)
 	}()
@@ -122,7 +123,7 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
+	if err := srv.Shutdown(shutCtx); err != nil { //nolint:contextcheck // intentionally new context for graceful shutdown
 		return err
 	}
 	return <-errCh
@@ -135,7 +136,7 @@ func buildLogger(level string) *zap.Logger {
 	}
 	l, err := cfg.Build()
 	if err != nil {
-		l, _ = zap.NewProduction()
+		l, _ = zap.NewProduction() //nolint:errcheck // fallback logger, can't fail in practice
 	}
 	return l
 }

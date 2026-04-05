@@ -1,7 +1,9 @@
+// Package overlay manages WireGuard overlay IP allocation from a CIDR block.
 package overlay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 
@@ -16,14 +18,16 @@ type dbtx interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// Allocator assigns overlay IPs from a configured CIDR range.
 type Allocator struct {
 	pool *pgxpool.Pool
 	cidr *net.IPNet
 }
 
+// New creates an Allocator for the given CIDR string.
 func New(pool *pgxpool.Pool, cidrStr string) (*Allocator, error) {
 	if pool == nil {
-		return nil, fmt.Errorf("overlay allocator: nil pool")
+		return nil, errors.New("overlay allocator: nil pool")
 	}
 
 	ip, cidr, err := net.ParseCIDR(cidrStr)
@@ -36,9 +40,10 @@ func New(pool *pgxpool.Pool, cidrStr string) (*Allocator, error) {
 	return &Allocator{pool: pool, cidr: cidr}, nil
 }
 
+// Allocate assigns the next available overlay IP to the given device.
 func (a *Allocator) Allocate(ctx context.Context, deviceID string) (net.IP, error) {
 	if a == nil || a.pool == nil || a.cidr == nil {
-		return nil, fmt.Errorf("overlay allocator: not initialized")
+		return nil, errors.New("overlay allocator: not initialized")
 	}
 	return a.allocateOn(ctx, a.pool, deviceID)
 }
@@ -47,10 +52,10 @@ func (a *Allocator) Allocate(ctx context.Context, deviceID string) (net.IP, erro
 // atomic with the caller's device creation.
 func (a *Allocator) AllocateTx(ctx context.Context, tx pgx.Tx, deviceID string) (net.IP, error) {
 	if a == nil || a.cidr == nil {
-		return nil, fmt.Errorf("overlay allocator: not initialized")
+		return nil, errors.New("overlay allocator: not initialized")
 	}
 	if tx == nil {
-		return nil, fmt.Errorf("overlay allocator: nil tx")
+		return nil, errors.New("overlay allocator: nil tx")
 	}
 	return a.allocateOn(ctx, tx, deviceID)
 }
@@ -99,9 +104,10 @@ WHERE id = $2
 	return ip, nil
 }
 
+// Release clears the overlay IP assignment for the given device.
 func (a *Allocator) Release(ctx context.Context, deviceID string) error {
 	if a == nil || a.pool == nil {
-		return fmt.Errorf("overlay allocator: not initialized")
+		return errors.New("overlay allocator: not initialized")
 	}
 
 	if _, err := a.pool.Exec(ctx, `

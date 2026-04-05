@@ -1,3 +1,4 @@
+// Package wg provides WireGuard interface management via system commands.
 package wg
 
 import (
@@ -9,24 +10,27 @@ import (
 	"go.uber.org/zap"
 )
 
+// Manager controls a single WireGuard network interface.
 type Manager struct {
 	InterfaceName string
 }
 
+// New creates a Manager for the named WireGuard interface.
 func New(interfaceName string) *Manager {
 	return &Manager{InterfaceName: interfaceName}
 }
 
+// Init creates the WireGuard interface, sets its private key, address, and brings it up.
 func (m *Manager) Init(ctx context.Context, privateKey, address, listenPort string) error {
 	keyFile, err := os.CreateTemp("", "silkie-wg-private-key-*")
 	if err != nil {
 		zap.L().Error("create wireguard private key temp file", zap.Error(err))
 		return err
 	}
-	defer os.Remove(keyFile.Name())
+	defer os.Remove(keyFile.Name()) //nolint:errcheck // temp file cleanup is best-effort
 
 	if _, err := keyFile.WriteString(privateKey); err != nil {
-		_ = keyFile.Close()
+		_ = keyFile.Close() //nolint:errcheck // best-effort close on error path
 		zap.L().Error("write wireguard private key", zap.Error(err), zap.String("interface", m.InterfaceName))
 		return err
 	}
@@ -52,21 +56,20 @@ func (m *Manager) Init(ctx context.Context, privateKey, address, listenPort stri
 		return err
 	}
 
-	if err := run(ctx, "ip", "link", "set", m.InterfaceName, "up"); err != nil {
-		return err
-	}
-
-	return nil
+	return run(ctx, "ip", "link", "set", m.InterfaceName, "up")
 }
 
+// AddPeer adds a WireGuard peer with the given public key and allowed IP.
 func (m *Manager) AddPeer(ctx context.Context, pubKey, allowedIP string) error {
 	return run(ctx, "wg", "set", m.InterfaceName, "peer", pubKey, "allowed-ips", allowedIP, "persistent-keepalive", "25")
 }
 
+// RemovePeer removes a WireGuard peer by public key.
 func (m *Manager) RemovePeer(ctx context.Context, pubKey string) error {
 	return run(ctx, "wg", "set", m.InterfaceName, "peer", pubKey, "remove")
 }
 
+// Down tears down the WireGuard interface.
 func (m *Manager) Down(ctx context.Context) error {
 	return run(ctx, "ip", "link", "del", m.InterfaceName)
 }
