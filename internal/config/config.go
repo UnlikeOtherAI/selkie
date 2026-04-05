@@ -26,6 +26,7 @@ type Config struct {
 	ServerPort               int
 	LogLevel                 string
 	OTELExporterOTLPEndpoint string
+	OPAEndpoint              string
 }
 
 // Load reads all configuration from environment variables with sensible defaults.
@@ -49,6 +50,7 @@ func Load() Config {
 		ServerPort:               getenvInt("SERVER_PORT", 8080),
 		LogLevel:                 getenv("LOG_LEVEL", "info"),
 		OTELExporterOTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		OPAEndpoint:              os.Getenv("OPA_ENDPOINT"),
 	}
 }
 
