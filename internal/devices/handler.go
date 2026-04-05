@@ -1,282 +1,356 @@
 package devices
 
 import (
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/json"
+	"errors"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-
+	"github.com/jackc/pgx/v5"
 	"github.com/unlikeotherai/silkie/internal/auth"
+	"github.com/unlikeotherai/silkie/internal/config"
 	"github.com/unlikeotherai/silkie/internal/store"
+	"go.uber.org/zap"
 )
 
-const pairCodeChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
 type Handler struct {
-	db *store.DB
+	db     *store.DB
+	logger *zap.Logger
+	cfg    config.Config
 }
 
-func New(db *store.DB) *Handler {
-	return &Handler{db: db}
+func New(db *store.DB, logger *zap.Logger, cfg config.Config) *Handler {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	return &Handler{db: db, logger: logger, cfg: cfg}
 }
 
 func (h *Handler) Mount(r chi.Router) {
-	r.Post("/v1/auth/pair/start", h.pairStart)
-	r.Get("/v1/auth/pair/status", h.pairStatus)
-	r.Get("/v1/devices", h.listDevices)
-	r.Get("/v1/devices/{id}", h.getDevice)
-	r.Post("/v1/devices/{id}/heartbeat", h.heartbeat)
-	r.Delete("/v1/devices/{id}", h.revokeDevice)
+	r.Group(func(r chi.Router) {
+		r.Use(auth.Middleware(h.cfg))
+		r.Post("/v1/auth/pair/start", h.handlePairStart)
+		r.Get("/v1/auth/pair/status", h.handlePairStatus)
+		r.Get("/v1/devices", h.handleListDevices)
+		r.Get("/v1/devices/{id}", h.handleGetDevice)
+		r.Post("/v1/devices/{id}/heartbeat", h.handleHeartbeat)
+		r.Delete("/v1/devices/{id}", h.handleDeleteDevice)
+	})
 }
 
-func (h *Handler) pairStart(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		WGPublicKey  string `json:"wg_public_key"`
-		Hostname     string `json:"hostname"`
-		OSPlatform   string `json:"os_platform"`
-		OSArch       string `json:"os_arch"`
-		AgentVersion string `json:"agent_version"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if body.WGPublicKey == "" || body.Hostname == "" {
-		writeErr(w, http.StatusBadRequest, "wg_public_key and hostname required")
-		return
-	}
-
-	code, err := generatePairCode()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to generate code")
-		return
-	}
-
-	_, err = h.db.Pool.Exec(r.Context(), `
-		INSERT INTO pair_codes
-			(code_hash, requested_hostname, requested_wg_public_key,
-			 requested_agent_version, requested_os_platform, requested_os_arch,
-			 status, expires_at)
-		VALUES
-			(sha256($1::bytea), $2, $3, $4, $5, $6, 'pending', now() + interval '10 minutes')
-	`, code, body.Hostname, body.WGPublicKey,
-		coalesce(body.AgentVersion, "unknown"),
-		coalesce(body.OSPlatform, "unknown"),
-		coalesce(body.OSArch, "unknown"))
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to create pair code")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"code": code})
+type pairStartRequest struct {
+	WGPublicKey  string `json:"wg_public_key"`
+	Hostname     string `json:"hostname"`
+	OSPlatform   string `json:"os_platform"`
+	OSArch       string `json:"os_arch"`
+	AgentVersion string `json:"agent_version"`
 }
 
-func (h *Handler) pairStatus(w http.ResponseWriter, r *http.Request) {
+type heartbeatRequest struct {
+	ExternalEndpointHost string `json:"external_endpoint_host"`
+	ExternalEndpointPort int    `json:"external_endpoint_port"`
+	AgentVersion         string `json:"agent_version"`
+	DiskFreeBytes        int64  `json:"disk_free_bytes"`
+}
+
+func (h *Handler) handlePairStart(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req pairStartRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.WGPublicKey == "" || req.Hostname == "" || req.OSPlatform == "" || req.OSArch == "" || req.AgentVersion == "" {
+		writeError(w, http.StatusBadRequest, "missing required fields")
+		return
+	}
+
+	for range 5 {
+		code, err := randomCode(6)
+		if err != nil {
+			h.logger.Error("generate pair code", zap.Error(err))
+			writeError(w, http.StatusInternalServerError, "failed to create pair code")
+			return
+		}
+
+		var createdCode string
+		err = h.db.Pool.QueryRow(
+			r.Context(),
+			`insert into pair_codes (
+				code,
+				wg_public_key,
+				hostname,
+				os_platform,
+				os_arch,
+				agent_version,
+				owner_user_id,
+				status,
+				expires_at
+			) values ($1, $2, $3, $4, $5, $6, $7, 'pending', $8) returning code`,
+			code,
+			req.WGPublicKey,
+			req.Hostname,
+			req.OSPlatform,
+			req.OSArch,
+			req.AgentVersion,
+			claims.Sub,
+			time.Now().UTC().Add(10*time.Minute),
+		).Scan(&createdCode)
+		if err == nil {
+			writeJSON(w, http.StatusOK, map[string]string{"code": createdCode})
+			return
+		}
+
+		h.logger.Error("insert pair code", zap.Error(err))
+	}
+
+	writeError(w, http.StatusInternalServerError, "failed to create pair code")
+}
+
+func (h *Handler) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 	code := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("code")))
 	if len(code) != 6 {
-		writeErr(w, http.StatusBadRequest, "invalid code")
+		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
 
-	var status string
-	var overlayIP *string
-	err := h.db.Pool.QueryRow(r.Context(), `
-		SELECT pc.status, d.overlay_ip::text
-		FROM pair_codes pc
-		LEFT JOIN devices d ON d.id = pc.claimed_device_id
-		WHERE pc.code_hash = sha256($1::bytea)
-		  AND pc.expires_at > now()
-	`, code).Scan(&status, &overlayIP)
+	var payload []byte
+	err := h.db.Pool.QueryRow(
+		r.Context(),
+		`select json_build_object(
+			'status', case when status = 'claimed' or credential is not null or wg_config is not null then 'claimed' else 'pending' end,
+			'credential', credential,
+			'wg_config', wg_config
+		) from pair_codes where code = $1 and expires_at > now()`,
+		code,
+	).Scan(&payload)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "code not found or expired")
-		return
-	}
-
-	resp := map[string]any{"status": status}
-	if status == "claimed" && overlayIP != nil {
-		resp["overlay_ip"] = *overlayIP
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (h *Handler) listDevices(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	rows, err := h.db.Pool.Query(r.Context(), `
-		SELECT id, hostname, status, overlay_ip::text, os_platform,
-		       os_version, os_arch, agent_version, last_seen_at, created_at
-		FROM devices
-		WHERE owner_user_id = (SELECT id FROM users WHERE external_id = $1)
-		  AND status != 'revoked'
-		ORDER BY created_at DESC
-	`, claims.Sub)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	defer rows.Close()
-
-	type deviceRow struct {
-		ID           string     `json:"id"`
-		Hostname     string     `json:"hostname"`
-		Status       string     `json:"status"`
-		OverlayIP    *string    `json:"overlay_ip"`
-		OSPlatform   string     `json:"os_platform"`
-		OSVersion    string     `json:"os_version"`
-		OSArch       string     `json:"os_arch"`
-		AgentVersion string     `json:"agent_version"`
-		LastSeenAt   *time.Time `json:"last_seen_at"`
-		CreatedAt    time.Time  `json:"created_at"`
-	}
-
-	devices := []deviceRow{}
-	for rows.Next() {
-		var d deviceRow
-		if err := rows.Scan(&d.ID, &d.Hostname, &d.Status, &d.OverlayIP,
-			&d.OSPlatform, &d.OSVersion, &d.OSArch, &d.AgentVersion,
-			&d.LastSeenAt, &d.CreatedAt); err != nil {
-			continue
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "pair code not found")
+			return
 		}
-		devices = append(devices, d)
-	}
-	writeJSON(w, http.StatusOK, devices)
-}
 
-func (h *Handler) getDevice(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		h.logger.Error("load pair status", zap.Error(err), zap.String("code", code))
+		writeError(w, http.StatusInternalServerError, "failed to load pair status")
 		return
 	}
-	id := chi.URLParam(r, "id")
 
-	var d struct {
-		ID           string     `json:"id"`
-		Hostname     string     `json:"hostname"`
-		Status       string     `json:"status"`
-		OverlayIP    *string    `json:"overlay_ip"`
-		OSPlatform   string     `json:"os_platform"`
-		OSVersion    string     `json:"os_version"`
-		OSArch       string     `json:"os_arch"`
-		AgentVersion string     `json:"agent_version"`
-		LastSeenAt   *time.Time `json:"last_seen_at"`
-		CreatedAt    time.Time  `json:"created_at"`
+	writeRawJSON(w, http.StatusOK, payload)
+}
+
+func (h *Handler) handleListDevices(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
 	}
-	err := h.db.Pool.QueryRow(r.Context(), `
-		SELECT id, hostname, status, overlay_ip::text, os_platform,
-		       os_version, os_arch, agent_version, last_seen_at, created_at
-		FROM devices
-		WHERE id = $1
-		  AND owner_user_id = (SELECT id FROM users WHERE external_id = $2)
-	`, id, claims.Sub).Scan(&d.ID, &d.Hostname, &d.Status, &d.OverlayIP,
-		&d.OSPlatform, &d.OSVersion, &d.OSArch, &d.AgentVersion,
-		&d.LastSeenAt, &d.CreatedAt)
+
+	var payload []byte
+	err := h.db.Pool.QueryRow(
+		r.Context(),
+		`select coalesce(json_agg(row_to_json(d)), '[]'::json)
+		from (
+			select *
+			from devices
+			where owner_user_id = $1
+			order by created_at desc
+		) d`,
+		claims.Sub,
+	).Scan(&payload)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "device not found")
+		h.logger.Error("list devices", zap.Error(err), zap.String("owner_user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to list devices")
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+
+	writeRawJSON(w, http.StatusOK, payload)
 }
 
-func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	id := chi.URLParam(r, "id")
-
-	var body struct {
-		ExternalEndpointHost string `json:"external_endpoint_host"`
-		ExternalEndpointPort int    `json:"external_endpoint_port"`
-		AgentVersion         string `json:"agent_version"`
-		DiskFreeBytes        int64  `json:"disk_free_bytes"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	tag, err := h.db.Pool.Exec(r.Context(), `
-		UPDATE devices SET
-			last_seen_at = now(),
-			external_endpoint_host = NULLIF($3, ''),
-			external_endpoint_port = NULLIF($4, 0),
-			agent_version = NULLIF($5, ''),
-			disk_free_bytes = NULLIF($6, 0),
+	deviceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "device id is required")
+		return
+	}
+
+	var payload []byte
+	err := h.db.Pool.QueryRow(
+		r.Context(),
+		`select row_to_json(d)
+		from (
+			select *
+			from devices
+			where id = $1 and owner_user_id = $2
+			limit 1
+		) d`,
+		deviceID,
+		claims.Sub,
+	).Scan(&payload)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "device not found")
+			return
+		}
+
+		h.logger.Error("get device", zap.Error(err), zap.String("device_id", deviceID), zap.String("owner_user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to load device")
+		return
+	}
+
+	writeRawJSON(w, http.StatusOK, payload)
+}
+
+func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	deviceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "device id is required")
+		return
+	}
+
+	var req heartbeatRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	commandTag, err := h.db.Pool.Exec(
+		r.Context(),
+		`update devices
+		set external_endpoint_host = $1,
+			external_endpoint_port = $2,
+			agent_version = $3,
+			disk_free_bytes = $4,
+			last_heartbeat_at = now(),
 			updated_at = now()
-		WHERE id = $1
-		  AND owner_user_id = (SELECT id FROM users WHERE external_id = $2)
-		  AND status = 'active'
-	`, id, claims.Sub,
-		body.ExternalEndpointHost, body.ExternalEndpointPort,
-		body.AgentVersion, body.DiskFreeBytes)
-	if err != nil || tag.RowsAffected() == 0 {
-		writeErr(w, http.StatusNotFound, "device not found or not active")
+		where id = $5 and owner_user_id = $6`,
+		req.ExternalEndpointHost,
+		req.ExternalEndpointPort,
+		req.AgentVersion,
+		req.DiskFreeBytes,
+		deviceID,
+		claims.Sub,
+	)
+	if err != nil {
+		h.logger.Error("update heartbeat", zap.Error(err), zap.String("device_id", deviceID), zap.String("owner_user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to update heartbeat")
 		return
 	}
+
+	if commandTag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "device not found")
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) revokeDevice(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	id := chi.URLParam(r, "id")
 
-	tag, err := h.db.Pool.Exec(r.Context(), `
-		UPDATE devices SET
-			status = 'revoked',
-			revoked_at = now(),
+	deviceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "device id is required")
+		return
+	}
+
+	commandTag, err := h.db.Pool.Exec(
+		r.Context(),
+		`update devices
+		set status = 'revoked',
 			overlay_ip_reclaim_after = now() + interval '24 hours',
 			updated_at = now()
-		WHERE id = $1
-		  AND owner_user_id = (SELECT id FROM users WHERE external_id = $2)
-		  AND status != 'revoked'
-	`, id, claims.Sub)
-	if err != nil || tag.RowsAffected() == 0 {
-		writeErr(w, http.StatusNotFound, "device not found")
+		where id = $1 and owner_user_id = $2`,
+		deviceID,
+		claims.Sub,
+	)
+	if err != nil {
+		h.logger.Error("revoke device", zap.Error(err), zap.String("device_id", deviceID), zap.String("owner_user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to revoke device")
 		return
 	}
+
+	if commandTag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "device not found")
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func generatePairCode() (string, error) {
-	b := make([]byte, 6)
-	n := big.NewInt(int64(len(pairCodeChars)))
-	for i := range b {
-		idx, err := rand.Int(rand.Reader, n)
+func decodeJSON(r *http.Request, dst any) error {
+	defer r.Body.Close()
+
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("request body must contain a single JSON object")
+	}
+
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeRawJSON(w http.ResponseWriter, status int, payload []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func randomCode(length int) (string, error) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+	chars := make([]byte, length)
+	max := big.NewInt(int64(len(alphabet)))
+	for i := range chars {
+		n, err := crand.Int(crand.Reader, max)
 		if err != nil {
 			return "", err
 		}
-		b[i] = pairCodeChars[idx.Int64()]
+
+		chars[i] = alphabet[n.Int64()]
 	}
-	return string(b), nil
-}
 
-func coalesce(s, fallback string) string {
-	if s == "" {
-		return fallback
-	}
-	return s
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v) //nolint:errcheck
-}
-
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	return string(chars), nil
 }

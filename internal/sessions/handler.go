@@ -2,213 +2,280 @@ package sessions
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-
+	"github.com/jackc/pgx/v5"
 	"github.com/unlikeotherai/silkie/internal/auth"
+	"github.com/unlikeotherai/silkie/internal/config"
 	"github.com/unlikeotherai/silkie/internal/store"
+	"go.uber.org/zap"
 )
 
 type Handler struct {
-	db *store.DB
+	db     *store.DB
+	logger *zap.Logger
+	cfg    config.Config
 }
 
-func New(db *store.DB) *Handler {
-	return &Handler{db: db}
+func New(db *store.DB, logger *zap.Logger, cfg config.Config) *Handler {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	return &Handler{db: db, logger: logger, cfg: cfg}
 }
 
 func (h *Handler) Mount(r chi.Router) {
-	r.Post("/v1/sessions", h.createSession)
-	r.Post("/v1/sessions/{id}/candidates", h.submitCandidates)
-	r.Get("/v1/sessions", h.listSessions)
-	r.Get("/v1/devices/{id}/events", h.deviceEvents)
-}
-
-// POST /v1/sessions
-func (h *Handler) createSession(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	var body struct {
-		RequesterDeviceID string `json:"requester_device_id"`
-		TargetDeviceID    string `json:"target_device_id"`
-		TargetServiceID   string `json:"target_service_id"`
-		RequestedAction   string `json:"requested_action"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-	if body.TargetDeviceID == "" || body.TargetServiceID == "" {
-		writeErr(w, http.StatusBadRequest, "target_device_id and target_service_id required")
-		return
-	}
-
-	var sessionID string
-	err := h.db.Pool.QueryRow(r.Context(), `
-		INSERT INTO connect_sessions
-			(requester_user_id, requester_device_id, target_device_id,
-			 target_service_id, requested_action, status, expires_at)
-		SELECT
-			u.id,
-			NULLIF($2, '')::uuid,
-			$3::uuid,
-			$4::uuid,
-			$5,
-			'pending',
-			now() + interval '1 hour'
-		FROM users u WHERE u.external_id = $1
-		RETURNING id
-	`, claims.Sub,
-		body.RequesterDeviceID, body.TargetDeviceID,
-		body.TargetServiceID, coalesce(body.RequestedAction, "connect")).Scan(&sessionID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to create session")
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":        sessionID,
-		"status":    "pending",
-		"expires_at": time.Now().Add(time.Hour),
+	r.Group(func(r chi.Router) {
+		r.Use(auth.Middleware(h.cfg))
+		r.Post("/v1/sessions", h.handleCreateSession)
+		r.Post("/v1/sessions/{id}/candidates", h.handleSessionCandidates)
+		r.Get("/v1/sessions", h.handleListSessions)
+		r.Get("/v1/devices/{id}/events", h.handleDeviceEvents)
 	})
 }
 
-// POST /v1/sessions/{id}/candidates
-func (h *Handler) submitCandidates(w http.ResponseWriter, r *http.Request) {
+type createSessionRequest struct {
+	RequesterDeviceID string `json:"requester_device_id"`
+	TargetDeviceID    string `json:"target_device_id"`
+	TargetServiceID   string `json:"target_service_id"`
+	RequestedAction   string `json:"requested_action"`
+}
+
+type candidatesRequest struct {
+	Role       string `json:"role"`
+	Candidates []any  `json:"candidates"`
+}
+
+func (h *Handler) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	sessionID := chi.URLParam(r, "id")
-
-	var body struct {
-		Role       string   `json:"role"` // "requester" or "target"
-		Candidates []string `json:"candidates"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	candidatesJSON, err := json.Marshal(body.Candidates)
+	var req createSessionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.RequesterDeviceID == "" || req.TargetDeviceID == "" || req.TargetServiceID == "" || req.RequestedAction == "" {
+		writeError(w, http.StatusBadRequest, "missing required fields")
+		return
+	}
+
+	var payload []byte
+	err := h.db.Pool.QueryRow(
+		r.Context(),
+		`with inserted as (
+			insert into connect_sessions (
+				requester_user_id,
+				requester_device_id,
+				target_device_id,
+				target_service_id,
+				requested_action,
+				status,
+				expires_at
+			) values ($1, $2, $3, $4, $5, 'pending', $6)
+			returning *
+		)
+		select row_to_json(inserted) from inserted`,
+		claims.Sub,
+		req.RequesterDeviceID,
+		req.TargetDeviceID,
+		req.TargetServiceID,
+		req.RequestedAction,
+		time.Now().UTC().Add(time.Hour),
+	).Scan(&payload)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid candidates")
+		h.logger.Error("create session", zap.Error(err), zap.String("requester_user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
 
-	var col string
-	switch body.Role {
+	writeRawJSON(w, http.StatusOK, payload)
+}
+
+func (h *Handler) handleSessionCandidates(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	sessionID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+
+	var req candidatesRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	column := ""
+	switch req.Role {
 	case "requester":
-		col = "requester_candidate_set"
+		column = "requester_candidate_set"
 	case "target":
-		col = "target_candidate_set"
+		column = "target_candidate_set"
 	default:
-		writeErr(w, http.StatusBadRequest, "role must be requester or target")
+		writeError(w, http.StatusBadRequest, "invalid role")
 		return
 	}
 
-	tag, err := h.db.Pool.Exec(r.Context(),
-		fmt.Sprintf(`
-			UPDATE connect_sessions SET %s = $1, status = 'candidate_exchange', updated_at = now()
-			WHERE id = $2
-			  AND requester_user_id = (SELECT id FROM users WHERE external_id = $3)
-			  AND status IN ('pending', 'candidate_exchange')
-		`, col),
-		candidatesJSON, sessionID, claims.Sub)
-	if err != nil || tag.RowsAffected() == 0 {
-		writeErr(w, http.StatusNotFound, "session not found")
+	candidateSet, err := json.Marshal(req.Candidates)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid candidates")
 		return
 	}
+
+	query := fmt.Sprintf(`update connect_sessions
+		set %s = $1::jsonb,
+			updated_at = now()
+		where id = $2 and requester_user_id = $3`, column)
+	commandTag, err := h.db.Pool.Exec(r.Context(), query, candidateSet, sessionID, claims.Sub)
+	if err != nil {
+		h.logger.Error("update session candidates", zap.Error(err), zap.String("session_id", sessionID), zap.String("requester_user_id", claims.Sub), zap.String("role", req.Role))
+		writeError(w, http.StatusInternalServerError, "failed to update candidates")
+		return
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /v1/sessions
-func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	rows, err := h.db.Pool.Query(r.Context(), `
-		SELECT id, status, target_device_id, target_service_id,
-		       selected_path, created_at, closed_at
-		FROM connect_sessions
-		WHERE requester_user_id = (SELECT id FROM users WHERE external_id = $1)
-		ORDER BY created_at DESC
-		LIMIT 50
-	`, claims.Sub)
+	var payload []byte
+	err := h.db.Pool.QueryRow(
+		r.Context(),
+		`select coalesce(json_agg(row_to_json(s)), '[]'::json)
+		from (
+			select *
+			from connect_sessions
+			where requester_user_id = $1
+			order by created_at desc
+			limit 50
+		) s`,
+		claims.Sub,
+	).Scan(&payload)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "query failed")
+		h.logger.Error("list sessions", zap.Error(err), zap.String("requester_user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return
 	}
-	defer rows.Close()
 
-	type sessionRow struct {
-		ID              string     `json:"id"`
-		Status          string     `json:"status"`
-		TargetDeviceID  string     `json:"target_device_id"`
-		TargetServiceID string     `json:"target_service_id"`
-		SelectedPath    *string    `json:"selected_path"`
-		CreatedAt       time.Time  `json:"created_at"`
-		ClosedAt        *time.Time `json:"closed_at"`
-	}
-
-	sessions := []sessionRow{}
-	for rows.Next() {
-		var s sessionRow
-		if err := rows.Scan(&s.ID, &s.Status, &s.TargetDeviceID, &s.TargetServiceID,
-			&s.SelectedPath, &s.CreatedAt, &s.ClosedAt); err != nil {
-			continue
-		}
-		sessions = append(sessions, s)
-	}
-	writeJSON(w, http.StatusOK, sessions)
+	writeRawJSON(w, http.StatusOK, payload)
 }
 
-// GET /v1/devices/{id}/events — SSE stream
-func (h *Handler) deviceEvents(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok || claims.Sub == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	deviceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "device id is required")
+		return
+	}
+
+	var exists int
+	err := h.db.Pool.QueryRow(
+		r.Context(),
+		`select 1 from devices where id = $1 and owner_user_id = $2`,
+		deviceID,
+		claims.Sub,
+	).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "device not found")
+			return
+		}
+
+		h.logger.Error("load device events stream", zap.Error(err), zap.String("device_id", deviceID), zap.String("owner_user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to open events stream")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeErr(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-
-	// Send initial connected event
-	fmt.Fprintf(w, "event: connected\ndata: {}\n\n")
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID)
 	flusher.Flush()
 
-	// Keep connection alive until client disconnects
-	// Real Redis pub/sub fan-out is wired in the next pass
-	<-r.Context().Done()
-}
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
 
-func coalesce(s, fallback string) string {
-	if s == "" {
-		return fallback
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			_, _ = io.WriteString(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
 	}
-	return s
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func decodeJSON(r *http.Request, dst any) error {
+	defer r.Body.Close()
+
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("request body must contain a single JSON object")
+	}
+
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v) //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func writeRawJSON(w http.ResponseWriter, status int, payload []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }

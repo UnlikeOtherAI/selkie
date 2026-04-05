@@ -33,11 +33,14 @@ func main() {
 }
 
 func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
-	db, err := store.NewDB(ctx, cfg)
+	db, err := store.OpenDB(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	if err := db.RunMigrations(ctx, "migrations"); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
 	logger.Info("migrations applied")
 
 	rdb, err := store.NewRedis(ctx, cfg)
@@ -74,8 +77,8 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		w.Write([]byte("ready")) //nolint:errcheck
 	})
 
-	devices.New(db).Mount(r)
-	sessions.New(db).Mount(r)
+	devices.New(db, logger, cfg).Mount(r)
+	sessions.New(db, logger, cfg).Mount(r)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ServerPort),
