@@ -180,3 +180,111 @@ WireGuard is used as the encrypted peer-to-peer transport. The server manages
 overlay IP allocation and peer config distribution. Direct paths are preferred;
 TURN relay via coturn is the fallback when NAT prevents direct connectivity.
 See [brief.md](brief.md) for the full NAT traversal design.
+
+---
+
+## WireGuard topology (MVP)
+
+Silkie uses a **hub-and-spoke** topology for MVP. The control server runs a
+WireGuard interface (`wg0`) and acts as the hub. Every enrolled device peers
+directly to the server; devices do not peer with each other directly.
+
+```
+Device A ──── WireGuard ────► Server (hub, wg0)
+Device B ──── WireGuard ────► Server (hub, wg0)
+Device C ──── WireGuard ────► Server (hub, wg0)
+```
+
+Application traffic between Device A and Device B flows:
+
+```
+Device A → (WG encrypted) → Server → (WG encrypted) → Device B
+```
+
+This keeps the initial implementation simple: the server controls all peering,
+there is no mesh configuration required, and NAT traversal between devices is
+not needed for MVP.
+
+### Server WireGuard interface
+
+The server's `wg0` interface is configured once at startup:
+
+```ini
+[Interface]
+PrivateKey = <server_private_key>
+Address    = 10.100.0.1/16     # first IP in WG_OVERLAY_CIDR
+ListenPort = 51820
+```
+
+The server's overlay IP is `10.100.0.1` (or the first host address in
+`WG_OVERLAY_CIDR`). This is the IP that devices use as the WireGuard endpoint
+when connecting.
+
+### Device WireGuard configuration
+
+Each device receives a `wg_config` block from the server after enrollment:
+
+```ini
+[Interface]
+PrivateKey = <device_private_key>   # generated on-device, never transmitted
+Address    = 10.100.x.y/32          # device's assigned overlay IP
+DNS        = <optional>
+
+[Peer]
+PublicKey           = <server_public_key>
+Endpoint            = <server_host>:51820
+AllowedIPs          = 10.100.0.0/16   # entire overlay CIDR routed via server
+PersistentKeepalive = 25
+```
+
+`AllowedIPs = 10.100.0.0/16` routes all overlay traffic through the server.
+Devices do not need to know each other's endpoints; the server handles routing
+between peers.
+
+`PersistentKeepalive = 25` ensures the device's NAT mapping stays open so
+the server can send packets to it. 25 seconds is the standard value below the
+30-second NAT timeout of most residential routers.
+
+### Server peer table (per enrolled device)
+
+For each active device, the server maintains a WireGuard peer entry:
+
+```ini
+[Peer]
+PublicKey           = <device_public_key>
+AllowedIPs          = 10.100.x.y/32   # device's overlay IP only
+```
+
+The server does **not** set `Endpoint` for device peers — it learns the
+device's current external endpoint dynamically from the WireGuard handshake.
+The device's heartbeat updates the endpoint in the server's WireGuard peer
+table via `wg set wg0 peer <pubkey> endpoint <ip>:<port>`.
+
+### AllowedIPs computation
+
+| Party | AllowedIPs |
+|---|---|
+| Device (for server peer) | `WG_OVERLAY_CIDR` (e.g. `10.100.0.0/16`) — routes all overlay traffic to server |
+| Server (for device peer) | `<device_overlay_ip>/32` — only traffic destined for that device |
+
+### Endpoint updates
+
+When a device's external IP or port changes (roaming between networks):
+
+1. The WireGuard handshake updates the server's peer table automatically
+   (WireGuard learns the new endpoint from the incoming handshake).
+2. On the next heartbeat, the daemon confirms the new endpoint by including
+   it in the heartbeat payload. The server stores this in
+   `devices.last_heartbeat_at` and updates the peer entry if needed.
+
+### Key rotation
+
+On server-initiated key rotation:
+
+1. Server sends a key rotation request via SSE (`GET /v1/devices/{id}/events`).
+2. Daemon generates a new keypair locally.
+3. Daemon POSTs the new public key to `POST /v1/devices/{id}/rotate-key`.
+4. Server updates `device_keys` (sets old key `is_current = FALSE`, inserts
+   new key with `is_current = TRUE`) and updates `wg set wg0 peer` atomically.
+5. Old WireGuard peer entry (by old pubkey) is removed; new peer entry is added.
+6. Daemon applies the new private key to its local `wg0` interface.

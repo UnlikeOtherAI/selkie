@@ -606,6 +606,98 @@ live in a fast in-memory store.
 * Relay usage can be measured, constrained, and revoked independently of
   user login state. ([GitHub][5])
 
+## Real-time session events
+
+Session lifecycle events are delivered to devices and the admin UI via
+**Server-Sent Events (SSE)**.
+
+**Endpoint:** `GET /v1/devices/{id}/events`
+
+The client opens a long-lived HTTP connection. The server streams events in
+the standard SSE format:
+
+```
+event: session.requested
+data: {"session_id":"...","requester_device_id":"...","target_service_id":"..."}
+
+event: session.path_selected
+data: {"session_id":"...","selected_path":"direct"}
+```
+
+### Multi-instance fan-out
+
+When multiple server instances are running, SSE connections are load-balanced
+across them. A session event generated on instance A must reach a client
+connected to instance B.
+
+Fan-out is implemented via **Redis pub/sub**:
+
+- When a session event is generated, the server publishes to the Redis channel
+  for that device:
+  ```
+  PUBLISH silkie:device:{device_id}:events <json_event>
+  ```
+- Every server instance that has a client SSE connection for `device_id`
+  subscribes to that channel and forwards messages to its connected clients.
+- If no client is connected for a device, the published message is simply
+  discarded.
+
+This approach requires no sticky sessions for SSE — any instance can serve
+any device's event stream.
+
+### Reconnection
+
+SSE clients must handle disconnection and reconnect with `Last-Event-ID`.
+The server assigns a monotonic integer ID to each event (`id:` SSE field).
+On reconnect with `Last-Event-ID: N`, the server replays any events since
+`N` that are still in Redis (60-second buffer keyed by
+`silkie:device:{id}:event_buffer`).
+
+---
+
+## ConnectSession candidate persistence
+
+ICE candidate sets are persisted to Postgres for audit after the exchange
+completes. The `selected_path` column (`direct` or `relay`) is written once
+path selection finishes.
+
+Fields written to `connect_sessions` after exchange:
+
+- `candidate_set_requester` — full ICE candidate list from the initiating device
+- `candidate_set_target` — full ICE candidate list from the target device
+- `selected_path` — path chosen (`direct` or `relay`)
+- `connected_at` — timestamp when the connection was established
+
+These fields are retained indefinitely for audit queries. They are never
+exposed via the admin UI by default; they are queryable via the audit log.
+
+---
+
+## Overlay IP reclaim policy
+
+When a device is revoked:
+
+1. `devices.status` is set to `revoked`.
+2. `devices.overlay_ip_released_at` is set to `NOW()`.
+3. The device's WireGuard peer entry is removed from the server's `wg0`
+   interface immediately.
+4. The overlay IP remains reserved in the `devices` table for **24 hours**
+   (grace period) to allow stale WireGuard peer tables on other devices to
+   expire naturally.
+5. After 24 hours, a background worker (running on the leader instance via
+   Postgres advisory lock) sets `devices.overlay_ip = NULL` and returns the
+   IP to the available pool.
+6. IPs are **never immediately reused** — a freed IP is only reassigned to a
+   new device after it has been in the free pool for at least 24 hours. This
+   prevents a new device from accidentally receiving traffic intended for the
+   revoked device.
+
+The free IP pool is maintained as a query: any IP in `WG_OVERLAY_CIDR` that
+is not currently assigned to a device with `overlay_ip IS NOT NULL`. The
+server selects the lowest available IP for each new enrollment.
+
+---
+
 ## References
 
 * WireGuard protocol and quick start. ([WireGuard][2])

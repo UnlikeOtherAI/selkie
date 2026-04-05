@@ -157,6 +157,131 @@ read from the OS — nothing is estimated or inferred.
 - The user can inspect exactly what will be sent before enrollment by running
   `silkie enroll --dry-run`.
 
+## Privilege model
+
+The daemon needs `CAP_NET_ADMIN` to create and configure the WireGuard
+interface. This is handled differently per platform:
+
+### macOS
+
+The daemon runs as the current user. A **privileged helper tool** (a separate
+setuid-root binary, installed to `/Library/PrivilegedHelperTools/` via SMJobBless)
+performs the WireGuard interface operations on behalf of the daemon. The helper
+is invoked once at service install time and again whenever the WireGuard
+interface needs to be (re)created. `sudo` is not required after the initial
+install.
+
+The launchd plist (`~/Library/LaunchAgents/com.unlikeotherai.silkie.plist`) runs
+the daemon as the current user. The helper communicates via a Mach port registered
+in the bootstrap namespace.
+
+### Linux
+
+The systemd unit runs with elevated network capabilities:
+
+```ini
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+```
+
+Alternatively, the daemon binary can be given `CAP_NET_ADMIN` directly via
+`setcap cap_net_admin+eip /usr/local/bin/silkie-daemon`, in which case the
+systemd unit can run as a non-root user.
+
+---
+
+## WireGuard interface lifecycle
+
+| Event | Action |
+|---|---|
+| `service start` (first run) | Create `wg0` interface, apply full peer config from server |
+| `service start` (subsequent) | Bring up existing `wg0`, sync peer config from server |
+| Heartbeat response with updated peer config | Apply incremental peer config update via `wg set` |
+| `service stop` | Bring `wg0` down (interface remains, peers removed) |
+| `service uninstall` | Destroy `wg0` interface entirely |
+| `silkie logout` | Stop tunnel, destroy interface, remove all local state |
+
+The server's WireGuard interface address is the first IP in `WG_OVERLAY_CIDR`
+(e.g. `10.100.0.1/16`). All devices peer to the server as hub.
+
+---
+
+## Backoff and resilience
+
+### Heartbeat backoff
+
+Heartbeats are sent every 30 seconds under normal conditions. On failure
+(network error or server error response), the daemon backs off exponentially:
+
+```
+1s → 2s → 4s → 8s → 16s → 32s → 60s (cap)
+```
+
+Backoff resets to 30s on the next successful heartbeat.
+
+### Server unreachable behaviour
+
+When the server cannot be reached (DNS failure, TCP timeout, 5xx responses),
+the daemon:
+
+1. Keeps the WireGuard interface **up** with the last-known peer configuration.
+2. Queues failed heartbeats in memory (up to 10 queued; older ones are
+   discarded). On reconnect, sends the most recent heartbeat immediately.
+3. Logs a warning per failure: `"server unreachable, retrying in Xs"`.
+4. Does not tear down the overlay network — existing connections between devices
+   remain functional as long as the WireGuard peers remain reachable directly.
+
+### SSO polling backoff
+
+During enrollment polling (`GET /v1/auth/pair/status` or
+`GET /v1/auth/device/status`), the same exponential backoff applies if the
+server is unreachable. The base interval is 5 seconds (as documented), and
+backoff caps at 60 seconds.
+
+---
+
+## Logging
+
+| Platform | Log file |
+|---|---|
+| macOS | `~/.silkie/silkie.log` |
+| Linux | `~/.silkie/silkie.log` (also forwarded to journald if running under systemd) |
+
+Log rotation: rotate at 10 MB, keep 3 files (`silkie.log`, `silkie.log.1`,
+`silkie.log.2`). Implemented via the daemon's internal logger; no external
+logrotate configuration required.
+
+Log levels: `debug`, `info` (default), `warn`, `error`. Set `LOG_LEVEL` in the
+environment or pass `--log-level` to the daemon.
+
+### Service crash loop backoff
+
+If the OS service crashes and is restarted by launchd or systemd, backoff is
+handled by the service manager:
+
+**macOS (launchd)** — set `ThrottleInterval` in the plist:
+```xml
+<key>ThrottleInterval</key>
+<integer>10</integer>
+```
+
+**Linux (systemd)** — set restart limits in the unit:
+```ini
+[Service]
+Restart=on-failure
+RestartSec=10s
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+```
+
+After 5 crashes in 120 seconds, systemd stops attempting to restart the
+service. Run `systemctl reset-failed silkie` to clear the limit and retry.
+
+---
+
 ## Security notes
 
 - The WireGuard private key is generated locally and never transmitted.
