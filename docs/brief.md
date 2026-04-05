@@ -3,8 +3,11 @@
 > **MVP scope (2026-04-05):** single user reaching their own machines from
 > anywhere. The full brief below is the target architecture; the initial
 > implementation only builds what that one-user path requires. See
-> [techstack.md](techstack.md) for the chosen stack and [sso.md](sso.md) for
-> SSO integration with `authentication.unlikeotherai.com`.
+> [techstack.md](techstack.md) for the chosen stack, [sso.md](sso.md) for
+> SSO integration with `authentication.unlikeotherai.com`,
+> [schema.md](schema.md) for the database DDL,
+> [deployment.md](deployment.md) for runtime operations, and
+> [security.md](security.md) for hardening rules.
 
 ## Scope
 
@@ -158,11 +161,18 @@ management, and audit access.
 * `POST /v1/connect`
 * `POST /v1/sessions/{id}/candidates`
 * `POST /v1/sessions/{id}/relay-credentials`
+* `GET /v1/devices/{id}/events`
 * `POST /v1/devices/{id}/rotate-key`
 * `GET /v1/audit`
 * `GET /healthz`
 * `GET /readyz`
 * `GET /metrics`
+
+The real-time device event channel is **Server-Sent Events (SSE)** on
+`GET /v1/devices/{id}/events`. In a multi-instance deployment, session and
+device events must be fanned out through Redis pub/sub using the channel
+pattern `silkie:device:{id}:events` so any server instance can publish and any
+connected instance can stream the event to the correct device.
 
 ### 2. Identity and Auth Adapter
 
@@ -201,6 +211,8 @@ This subsystem manages machine identity and presence.
 * Track key rotation history.
 * Support device revocation and quarantine.
 * Assign overlay identity and network metadata.
+* Hold revoked overlay IPs for a 24-hour grace period before reuse and only
+  then return them to the free pool in PostgreSQL.
 
 **Required fields**
 
@@ -210,6 +222,7 @@ This subsystem manages machine identity and presence.
 * `status` (`pending`, `active`, `revoked`, `quarantined`)
 * `hostname`
 * `overlay_ip`
+* `overlay_ip_reclaim_after`
 * `last_seen_at`
 * `agent_version` — silkie CLI version string
 
@@ -272,6 +285,8 @@ This subsystem translates registry + policy state into overlay configuration.
 * Publish endpoint updates after successful path selection.
 * Provide keepalive recommendations for NAT-constrained peers.
 * Support key rotation and peer reconfiguration.
+* Reclaim revoked overlay IPs only after a 24-hour grace window and never
+  immediately reuse an address when a device is revoked.
 
 WireGuard requires peer configuration with keys, endpoints, and allowed IPs,
 and uses persistent keepalive when peers behind NAT/firewalls need to remain
@@ -288,6 +303,11 @@ nodes without carrying application traffic in the normal case.
 * Verify policy before candidate exchange begins.
 * Exchange connectivity candidates between requester and target device.
 * Publish session state transitions.
+* Stream device-directed session events over SSE on
+  `GET /v1/devices/{id}/events`.
+* Fan out device events through Redis pub/sub so multiple server instances can
+  serve SSE clients safely, using
+  `PUBLISH silkie:device:{id}:events <json-event>`.
 * Select direct path if successful; otherwise mint relay credentials.
 * Expire idle or abandoned sessions.
 
@@ -303,6 +323,10 @@ nodes without carrying application traffic in the normal case.
 * `candidate_set_target`
 * `selected_path` (`direct`, `relay`)
 * `expires_at`
+
+Candidate sets may be buffered ephemerally while exchange is in progress, but
+once the exchange completes the requester candidate set, target candidate set,
+and final `selected_path` must be persisted to PostgreSQL for audit.
 
 This is the control-plane realization of the ICE model: coordinate candidate
 exchange, use STUN-derived information for address discovery and checks, and
@@ -435,9 +459,11 @@ Use two storage classes:
 * relay credential TTL state
 * rate limits
 * distributed locks
+* Redis pub/sub channels for SSE fan-out (`silkie:device:{id}:events`)
 
 The durable store should be relational. Ephemeral coordination state should
-live in a fast in-memory store.
+live in a fast in-memory store. Final candidate sets and selected path do not
+stay ephemeral; they are written back to PostgreSQL after signaling completes.
 
 ### 12. Admin and Maintenance Surface
 
@@ -499,6 +525,8 @@ live in a fast in-memory store.
   encrypted transport only.
 * Registration, connect, and relay-credential endpoints must be rate-limited.
 * Endpoint and key changes must be versioned and reversible.
+* Real-time device/session events must remain deliverable across multiple
+  server instances through Redis pub/sub.
 
 ---
 

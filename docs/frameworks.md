@@ -6,20 +6,20 @@ overlay.
 
 ## Components
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │  Admin UI (browser)                                         │
 │  Static HTML/JS served by the control server               │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTPS (internal session JWT)
 ┌──────────────────────────▼──────────────────────────────────┐
-│  Control Server  (Go)                                       │
+│  Control Server (Go, MVP owns wg0)                         │
 │  Auth · Device registry · Session broker · Policy · Audit  │
-│  Postgres (durable) · Redis (ephemeral)                     │
+│  Postgres (durable) · Redis (ephemeral)                    │
 └──────────────────────────┬──────────────────────────────────┘
                            │ WireGuard overlay + STUN/TURN
 ┌──────────────────────────▼──────────────────────────────────┐
-│  Silkie CLI  (Node.js, runs as OS service on each device)   │
+│  Silkie CLI (Node.js, runs as OS service on each device)   │
 │  WireGuard peer · Heartbeat · Service manifest reporter    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -29,10 +29,9 @@ overlay.
 Language: **Go 1.23+** — see [techstack.md](techstack.md) for the full library
 map.
 
-The server is the single source of truth. It never carries application-layer
-traffic in normal operation; it only coordinates device identity, policy, and
-session establishment. The CLI talks to it over HTTPS using short-lived JWTs
-minted after device enrollment.
+The server is the single source of truth. It coordinates device identity,
+policy, session establishment, and in the MVP it also owns the hub WireGuard
+interface used to route traffic between device peers.
 
 ## Admin UI
 
@@ -50,11 +49,12 @@ enrolled it:
 1. Maintains a WireGuard peer connection to the overlay network.
 2. Sends periodic heartbeats to the control server with current endpoint and
    service manifest.
-3. Participates in ICE candidate exchange when a remote peer wants to connect.
-4. Switches between direct path and TURN relay as network conditions change.
+3. Subscribes to SSE for session and config events.
+4. Participates in ICE candidate exchange when a remote peer wants to connect.
+5. Switches between direct path and TURN relay as network conditions change.
 
-The CLI is the **only component that ever holds the device's WireGuard private
-key.** The server receives and stores only the public key.
+The CLI is the only component that ever holds the device's WireGuard private
+key. The server receives and stores only public keys.
 
 ## Authentication flows
 
@@ -62,12 +62,12 @@ Two paths exist for enrolling a new device. Both terminate with the CLI
 holding a device credential (long-lived opaque token stored locally) and the
 server holding the device's WireGuard public key.
 
-### Pairing code (primary)
+### Pairing code
 
 Used when enrolling any machine regardless of whether a browser is available
 on that machine.
 
-```
+```text
 CLI                         Server                       Admin UI
  │                             │                             │
  │── POST /v1/auth/pair/start ─►│                             │
@@ -76,23 +76,23 @@ CLI                         Server                       Admin UI
  │  (display "A3X9KF" in terminal)                           │
  │                             │◄── POST /v1/auth/pair/claim ─│
  │                             │    { code, device_name }    │
- │◄── poll /v1/auth/pair/status every 5s ──────────────────► │
+ │◄── poll /v1/auth/pair/status ───────────────────────────► │
  │◄─ { status: "authenticated", credential, wg_config } ─────│
  │                             │                             │
  │  (write credential to disk, configure WireGuard)          │
 ```
 
-- Code is 6 alphanumeric characters (uppercase), stored in Redis with a 10-minute TTL.
-- Single-use: claiming the code invalidates it immediately.
+- Code is 6 uppercase alphanumeric characters.
+- Code state is stored server-side and is single-use.
 - The CLI generates the WireGuard keypair locally before requesting the code;
-  the public key is included in `pair/start` and stored on claim.
+  the public key is included in `pair/start` and bound to the eventual claim.
 
-### SSO (same-machine)
+### SSO
 
 Used when the user is sitting at the machine being enrolled and a browser is
 available.
 
-```
+```text
 CLI                         Server                       Browser
  │                             │                             │
  │── POST /v1/auth/device/start ►│                            │
@@ -102,16 +102,15 @@ CLI                         Server                       Browser
  │──────────────────────────────────────────────────────────►│
  │                             │◄── SSO callback (UOA) ──────│
  │                             │    device_code validated    │
- │◄── poll /v1/auth/device/status every 5s ──────────────────│
+ │◄── poll /v1/auth/device/status ───────────────────────────│
  │◄─ { status: "authenticated", credential, wg_config } ─────│
  │                             │                             │
  │  (write credential to disk, configure WireGuard)          │
 ```
 
-- `device_code` is a random 32-byte token stored in Redis with a 15-minute TTL.
+- `device_code` is a random 32-byte token stored only as a hash server-side.
 - The browser SSO flow is the standard UOA OAuth 2.0 authorization-code flow
-  described in [sso.md](sso.md), with the `device_code` carried as a state
-  parameter so the server can mark it authenticated on callback.
+  described in [sso.md](sso.md), with the `device_code` carried as state.
 
 ## Client SDKs
 
@@ -124,167 +123,111 @@ language wrappers on top.
 
 The canonical implementation. Handles:
 
-- WireGuard peer lifecycle (using the WireGuard userspace Go library via CGo
-  or the native C++ binding).
-- ICE candidate exchange with the session broker.
-- TURN relay credential consumption and fallback path selection.
-- Connection state machine: `connecting → direct | relay → closed`.
-- Callback interface for connection events.
+- WireGuard peer lifecycle
+- ICE candidate exchange with the session broker
+- TURN relay credential consumption and fallback path selection
+- connection state machine: `connecting -> direct | relay -> closed`
+- callback interface for connection events
 
-All other SDKs wrap this library. Keeping the logic in one place ensures
-consistent behaviour across platforms.
+All other SDKs wrap this library so behavior stays consistent across
+platforms.
 
 ### Node.js SDK (`@silkie/sdk`)
 
-Native addon (`node-addon-api`) wrapping `libsilkie`. Published on npm.
-Used by the CLI daemon and available for Node.js applications that want to
-initiate or accept connections programmatically.
-
-```js
-import { SilkieClient } from '@silkie/sdk'
-
-const client = new SilkieClient({ serverUrl, credential })
-const conn = await client.connect({ deviceId, serviceId })
-conn.on('data', chunk => { /* … */ })
-```
+Native addon wrapping `libsilkie`. Published on npm. Used by the CLI daemon
+and available for Node.js applications that want to initiate or accept
+connections programmatically.
 
 ### Swift SDK (`Silkie`)
 
-Swift package wrapping `libsilkie` via a C bridging header. Targets iOS and
-macOS. Used by the iOS/macOS app to connect to enrolled devices.
+Swift package wrapping `libsilkie` via a C bridge. Targets iOS and macOS.
 
 ### Kotlin SDK (`silkie-android`)
 
-JNI wrapper around `libsilkie`. Targets Android. Exposes a coroutines-based
-API for connection management.
-
-### Compatibility
-
-Any platform that can link a C/C++ static or dynamic library can wrap
-`libsilkie` directly. The C++ core exposes a flat C API header
-(`silkie.h`) specifically to simplify FFI from languages with a C FFI
-(Rust, Python, Go, etc.).
-
----
+JNI wrapper around `libsilkie`. Targets Android and exposes a coroutines-based
+API.
 
 ## Service manifest
 
 After enrollment, the CLI scans for locally listening TCP/UDP ports and
 reports a service manifest to the server on every heartbeat. The server stores
-this as the device's service catalog (read-only from the admin UI). The user
-can annotate services with friendly names via the admin.
+this as the device's service catalog.
 
 ## Overlay network
 
-WireGuard is used as the encrypted peer-to-peer transport. The server manages
-overlay IP allocation and peer config distribution. Direct paths are preferred;
-TURN relay via coturn is the fallback when NAT prevents direct connectivity.
-See [brief.md](brief.md) for the full NAT traversal design.
+Silkie uses WireGuard as the encrypted overlay transport, but the MVP topology
+is deliberately simple: **hub-and-spoke**.
 
----
+### MVP topology
 
-## WireGuard topology (MVP)
+- The server owns a WireGuard interface, typically `wg0`.
+- The server takes one stable overlay IP from `WG_OVERLAY_CIDR`, for example
+  `10.100.0.1/16`.
+- Every enrolled device gets its own `/32` overlay IP.
+- Every device peers only with the server, not with every other device.
+- The server routes packets between peer `/32` addresses once they arrive on
+  `wg0`.
 
-Silkie uses a **hub-and-spoke** topology for MVP. The control server runs a
-WireGuard interface (`wg0`) and acts as the hub. Every enrolled device peers
-directly to the server; devices do not peer with each other directly.
+That means the data path for the MVP is:
 
-```
-Device A ──── WireGuard ────► Server (hub, wg0)
-Device B ──── WireGuard ────► Server (hub, wg0)
-Device C ──── WireGuard ────► Server (hub, wg0)
-```
-
-Application traffic between Device A and Device B flows:
-
-```
-Device A → (WG encrypted) → Server → (WG encrypted) → Device B
+```text
+device A <-> server wg0 <-> device B
 ```
 
-This keeps the initial implementation simple: the server controls all peering,
-there is no mesh configuration required, and NAT traversal between devices is
-not needed for MVP.
-
-### Server WireGuard interface
-
-The server's `wg0` interface is configured once at startup:
-
-```ini
-[Interface]
-PrivateKey = <server_private_key>
-Address    = 10.100.0.1/16     # first IP in WG_OVERLAY_CIDR
-ListenPort = 51820
-```
-
-The server's overlay IP is `10.100.0.1` (or the first host address in
-`WG_OVERLAY_CIDR`). This is the IP that devices use as the WireGuard endpoint
-when connecting.
-
-### Device WireGuard configuration
-
-Each device receives a `wg_config` block from the server after enrollment:
-
-```ini
-[Interface]
-PrivateKey = <device_private_key>   # generated on-device, never transmitted
-Address    = 10.100.x.y/32          # device's assigned overlay IP
-DNS        = <optional>
-
-[Peer]
-PublicKey           = <server_public_key>
-Endpoint            = <server_host>:51820
-AllowedIPs          = 10.100.0.0/16   # entire overlay CIDR routed via server
-PersistentKeepalive = 25
-```
-
-`AllowedIPs = 10.100.0.0/16` routes all overlay traffic through the server.
-Devices do not need to know each other's endpoints; the server handles routing
-between peers.
-
-`PersistentKeepalive = 25` ensures the device's NAT mapping stays open so
-the server can send packets to it. 25 seconds is the standard value below the
-30-second NAT timeout of most residential routers.
-
-### Server peer table (per enrolled device)
-
-For each active device, the server maintains a WireGuard peer entry:
-
-```ini
-[Peer]
-PublicKey           = <device_public_key>
-AllowedIPs          = 10.100.x.y/32   # device's overlay IP only
-```
-
-The server does **not** set `Endpoint` for device peers — it learns the
-device's current external endpoint dynamically from the WireGuard handshake.
-The device's heartbeat updates the endpoint in the server's WireGuard peer
-table via `wg set wg0 peer <pubkey> endpoint <ip>:<port>`.
+The server is on the WireGuard path in the MVP even when TURN is not used.
+TURN remains a separate fallback for networks where the WireGuard UDP path
+itself cannot be established directly.
 
 ### AllowedIPs computation
 
-| Party | AllowedIPs |
-|---|---|
-| Device (for server peer) | `WG_OVERLAY_CIDR` (e.g. `10.100.0.0/16`) — routes all overlay traffic to server |
-| Server (for device peer) | `<device_overlay_ip>/32` — only traffic destined for that device |
+Silkie computes `AllowedIPs` differently on devices and on the server.
 
-### Endpoint updates
+On enrolled devices:
 
-When a device's external IP or port changes (roaming between networks):
+- `AllowedIPs` is exactly the server overlay address as a `/32`.
+- Example: if the server overlay IP is `10.100.0.1`, every device receives
+  `AllowedIPs = 10.100.0.1/32`.
+- Devices do not receive every other device's `/32` in the MVP.
 
-1. The WireGuard handshake updates the server's peer table automatically
-   (WireGuard learns the new endpoint from the incoming handshake).
-2. On the next heartbeat, the daemon confirms the new endpoint by including
-   it in the heartbeat payload. The server stores this in
-   `devices.last_heartbeat_at` and updates the peer entry if needed.
+On the server:
 
-### Key rotation
+- Each peer entry gets `AllowedIPs = <device_overlay_ip>/32`.
+- Example: device `10.100.0.7` becomes a server peer with
+  `AllowedIPs = 10.100.0.7/32`.
+- Future routed subnets can be added later, but the MVP allows only the
+  device's single overlay address.
 
-On server-initiated key rotation:
+### Endpoint update flow
 
-1. Server sends a key rotation request via SSE (`GET /v1/devices/{id}/events`).
-2. Daemon generates a new keypair locally.
-3. Daemon POSTs the new public key to `POST /v1/devices/{id}/rotate-key`.
-4. Server updates `device_keys` (sets old key `is_current = FALSE`, inserts
-   new key with `is_current = TRUE`) and updates `wg set wg0 peer` atomically.
-5. Old WireGuard peer entry (by old pubkey) is removed; new peer entry is added.
-6. Daemon applies the new private key to its local `wg0` interface.
+Endpoint changes are driven by device heartbeats and successful handshakes.
+
+Flow:
+
+1. The CLI includes its current public endpoint in heartbeat payloads.
+2. The server stores that endpoint against the device record.
+3. The tunnel coordinator rewrites the matching server-side WireGuard peer
+   endpoint.
+4. The next WireGuard handshake uses the updated endpoint automatically.
+
+The server does not need to push a new peer list to every device just because
+one device's external endpoint changes. Devices keep a single peer: the
+server.
+
+### Keepalive policy
+
+`PersistentKeepalive = 25` is enabled for every peer on both sides:
+
+- every device peer config includes `PersistentKeepalive = 25`
+- every server-side peer entry also uses `PersistentKeepalive = 25`
+
+This keeps NAT mappings warm and keeps endpoint discovery reasonably fresh.
+
+### Routing responsibility
+
+Because the topology is hub-and-spoke, the server must route between peers:
+
+- IP forwarding must be enabled on the server host.
+- The server WireGuard interface must own the full overlay CIDR locally.
+- The control plane remains the allocator of `/32` device addresses.
+
+See [brief.md](brief.md) for the full session-broker and relay design.

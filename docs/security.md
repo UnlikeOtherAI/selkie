@@ -1,266 +1,205 @@
 # Security
 
-This document covers rate limiting, authentication hardening, credential
-design, and XSS/CSRF mitigations for the Silkie control server.
+This document records the concrete security controls for the Silkie MVP. It
+focuses on endpoint abuse resistance, bearer credential handling, admin UI
+browser security, and audit coverage.
 
----
+## Authentication surfaces
+
+Silkie has three distinct credential types:
+
+| Credential | Holder | Format | Storage |
+|---|---|---|---|
+| UOA access token | browser / mobile app | HS256 JWT from UOA | browser memory or mobile secure storage |
+| internal session token | browser / mobile app | HS256 JWT from Silkie | `localStorage` in the SPA, Keychain/Keystore on mobile |
+| device credential | CLI daemon | random 32 bytes, base64url-encoded | `~/.silkie/credential` on disk, bcrypt hash in Postgres |
+
+The browser never gets raw device credentials. The CLI never gets a user
+session token.
 
 ## Rate limits
 
-Implemented with a sliding-window counter in Redis. Keys are prefixed
-`silkie:ratelimit:` and expire automatically.
+All limits are enforced at the server, backed by Redis counters, and keyed by
+the smallest identity that reduces collateral damage.
 
-| Endpoint | Limit | Window | Lockout |
-|---|---|---|---|
-| `POST /v1/auth/pair/start` | 10 requests | 1 minute | per source IP |
-| `POST /v1/auth/pair/claim` | 5 failed attempts | per code | 1-hour lockout on the code |
-| `POST /v1/auth/device/start` | 10 requests | 1 minute | per source IP |
-| `POST /v1/devices/{id}/heartbeat` | 3 requests | 1 minute | per device ID |
-| `POST /v1/sessions` (connect) | 30 requests | 1 minute | per user ID |
-| `POST /v1/sessions/{id}/relay-credentials` | 10 requests | 1 minute | per session ID |
-| `POST /v1/auth/mobile/token` | 10 requests | 1 minute | per source IP |
-| `POST /v1/auth/mobile/enroll` | 5 requests | 1 minute | per source IP |
+| Endpoint | Limit | Key |
+|---|---|---|
+| `POST /v1/auth/pair/start` | 10 per minute | source IP |
+| `POST /v1/auth/pair/claim` | 5 failed attempts, then 1 hour lockout | source IP + normalized code |
+| `POST /v1/devices/{id}/heartbeat` | 3 per minute | device ID |
+| `POST /v1/connect` | 30 per minute | user ID |
+| `POST /v1/sessions/{id}/relay-credentials` | 10 per minute | session ID |
 
-On limit breach, return `429 Too Many Requests` with:
-```json
-{"error":"rate_limit_exceeded","retry_after":60}
-```
+Additional enrollment protection:
 
-Include `Retry-After: <seconds>` response header.
+- Pair-code claim attempts are also counted per code.
+- After 5 failed claims against the same code, that code is locked for
+  15 minutes even if the attacking IP changes.
 
----
+## Device credential format and verification
 
-## Device credential design
+Device credentials are generated only by the server after successful
+enrollment.
 
-### Format
+Format:
 
-A device credential is **32 random bytes encoded as base64url** (43 characters,
-no padding). Generated server-side using a cryptographically secure RNG
-(`crypto/rand` in Go).
+- 32 bytes from a cryptographically secure RNG
+- base64url-encoded without padding before delivery to the CLI
+- stored server-side only as a bcrypt hash
 
-```
-silkie_<base64url(32 random bytes)>
-```
-
-The `silkie_` prefix allows credentials to be identified and revoked if leaked
-(e.g. detected by secret scanning tools on GitHub).
-
-### Storage
-
-The credential is **never stored in plaintext** on the server. On issuance:
+Server-side handling:
 
 1. Generate 32 random bytes.
-2. Produce the credential string: `silkie_<base64url(bytes)>`.
-3. Return the credential to the device once (enrollment response only).
-4. Store `bcrypt(credential, cost=12)` in `device_credentials.credential_hash`.
+2. Base64url-encode the bytes for transport.
+3. Hash with bcrypt before persistence.
+4. Store the bcrypt hash in `devices.credential_hash`.
+5. Never log or re-display the raw credential.
 
-On every API call: extract the credential from the `Authorization: Bearer`
-header, bcrypt-verify against the stored hash, reject if no match.
+The bcrypt hash is used only for verification. The original credential is not
+recoverable from the database.
 
-### Credential binding
+## Device credential binding
 
-To prevent a stolen credential from being used from a different device, every
-authenticated API request must include a request-level HMAC:
+A stolen bearer token must not be enough to impersonate a device. Every
+device-authenticated API call binds the credential to the device's WireGuard
+identity.
 
-```
-X-Silkie-Request-Sig: HMAC-SHA256(credential || request_body_sha256 || unix_timestamp_minute)
-```
+Required request headers:
 
-The server recomputes the HMAC using the stored credential plaintext (held
-only in the device's memory during the session) and rejects requests where the
-signature does not match. This means a stolen credential token is useless
-without the device's in-process credential value.
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer <device credential>` |
+| `X-Silkie-Device-Key` | device WireGuard public key |
+| `X-Silkie-Timestamp` | UNIX timestamp |
+| `X-Silkie-Nonce` | single-use random nonce |
+| `X-Silkie-Binding` | `base64url(HMAC-SHA256(credential, wg_public_key || method || path || timestamp || nonce || body_sha256))` |
 
-Implementation note: the `unix_timestamp_minute` component is the current Unix
-timestamp truncated to the minute (`time.Now().Unix() / 60`). The server
-accepts the current minute and the previous minute to tolerate clock skew.
+Verification rules:
 
----
+1. Look up the device by `X-Silkie-Device-Key`.
+2. Verify the bearer credential against the stored bcrypt hash.
+3. Recompute `X-Silkie-Binding` server-side and compare with
+   `crypto/subtle.ConstantTimeCompare`.
+4. Reject timestamps outside a 30-second skew window.
+5. Reject nonce reuse using a short-lived Redis key.
+6. For post-enrollment device endpoints, require the request to originate from
+   the device's authenticated WireGuard overlay identity.
 
-## Pairing code anti-bruteforce
+The HMAC binds the credential to the registered public key and to the concrete
+HTTP request. The overlay-identity check means an attacker who steals only the
+credential still cannot use it without the corresponding WireGuard private key.
 
-A 6-character alphanumeric (uppercase) code has `36^6 = 2,176,782,336`
-combinations (~2.2 billion). This is sufficient to prevent online bruteforce
-at realistic request rates, but rate limiting provides an additional layer.
+## Pairing code hardening
 
-Additional defenses:
+Pairing codes are six uppercase alphanumeric characters.
 
-- **5 failed claim attempts on a single code** → code is locked for 1 hour
-  (Redis key: `silkie:pairlock:{code}`, TTL 3600s). The code is not deleted —
-  it still expires naturally — but claim attempts return `423 Locked`.
-- **Code deleted immediately on first successful claim.** The Redis key is
-  deleted and `pair_codes.status` is set to `claimed` atomically.
-- **Timing-safe comparison** for code lookup: use `hmac.Equal` or equivalent
-  constant-time comparison when checking the code against stored values, to
-  prevent timing oracle attacks.
-- Codes are stored in Redis as uppercase; the server normalises input to
-  uppercase before comparison to prevent case-sensitivity bypass.
+- Search space: `36^6 = 2,176,782,336` combinations, about 2.2 billion.
+- Codes expire after 10 minutes.
+- Codes are deleted immediately on first successful claim.
+- After 5 failed claim attempts for the same code, that code is locked for
+  15 minutes.
+- After 5 failed claim attempts from the same IP, the IP is locked out of
+  `pair/claim` for 1 hour.
 
----
+Storage and lookup:
 
-## CSRF strategy
+- The server stores only an HMAC digest of the normalized code, not the
+  plaintext code.
+- Lookup compares digests and uses a timing-safe comparison before accepting a
+  match.
+- Claim and status polling always operate on the stored code record; there is
+  no unaudited in-memory-only success path.
 
-The admin UI is a single-page application that stores session tokens in
-`localStorage` and sends them as `Authorization: Bearer <token>` headers.
+## Device code hardening
 
-**There is no cookie-based session on the admin UI.** This means the standard
-CSRF attack vector (malicious site triggering a cross-origin request that
-includes credentials automatically) does not apply: browsers do not
-automatically attach `Authorization` headers to cross-origin requests.
+SSO device enrollment uses a random 32-byte `device_code`, not a short human
+code.
 
-No CSRF token is required. The security model relies on:
+Rules:
 
-1. `Authorization` header (not a cookie) for all state-mutating requests.
-2. CORS policy on the server (see below) to prevent unauthorized cross-origin
-   reads.
+- `device_code` expires after 15 minutes.
+- The browser callback consumes it exactly once.
+- Polling the device-code status endpoint follows the CLI backoff policy and
+  never reveals whether a code belongs to a valid user.
 
-### CORS policy
+## CSRF and browser security
 
-```
-Access-Control-Allow-Origin: https://<UOA_DOMAIN>
-Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
-Access-Control-Allow-Headers: Authorization, Content-Type
-Access-Control-Max-Age: 600
-```
+The admin UI is an SPA-style application:
 
-The admin UI origin is the server's own domain. Do not allow `*` — wildcard
-CORS defeats the authorization header isolation benefit.
+- it sends Bearer tokens in the `Authorization` header
+- tokens live in `localStorage`
+- no session cookies are used
 
----
+Because there are no ambient cookies, classical CSRF is not the primary
+browser risk. The main browser risk is XSS.
 
-## XSS mitigations
+Required XSS mitigations:
 
-Because the admin UI uses no server-side rendering, XSS is the primary
-injection risk. The following mitigations are required:
+1. Use Subresource Integrity on any CDN-hosted JS or CSS assets.
+2. Set a strict Content Security Policy from Caddy.
+3. Avoid inline scripts in production builds; if a small inline bootstrap is
+   unavoidable, pin it with a CSP hash.
+4. Escape all server-rendered HTML and never trust service names, hostnames, or
+   tags from devices.
+5. Treat `localStorage` as sensitive because XSS can read it instantly.
 
-### Content Security Policy
+Recommended CSP baseline:
 
-Serve the following `Content-Security-Policy` header with every HTML response:
-
-```
+```http
 Content-Security-Policy:
   default-src 'self';
-  script-src 'self' https://cdn.tailwindcss.com https://fonts.googleapis.com;
-  style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com https://fonts.gstatic.com;
-  font-src https://fonts.gstatic.com;
+  script-src 'self';
+  style-src 'self' https://fonts.googleapis.com;
+  font-src 'self' https://fonts.gstatic.com;
   img-src 'self' data:;
   connect-src 'self';
-  frame-ancestors 'none';
+  object-src 'none';
   base-uri 'self';
-  form-action 'self';
+  frame-ancestors 'none'
 ```
 
-Adjust `script-src` if CDN URLs change. `'unsafe-inline'` is limited to
-`style-src` because Tailwind CDN injects inline styles; scripts must never be
-inline.
+## Transport security
 
-### Subresource Integrity (SRI)
+- All control-plane traffic is HTTPS only.
+- Caddy terminates TLS; the Go server is private behind it.
+- HSTS is enabled in production.
+- Self-signed certificates are rejected by default. Development-only bypasses
+  must be explicit and CLI-scoped.
 
-For any CDN asset referenced in HTML templates, include `integrity` and
-`crossorigin` attributes:
+## Audit coverage
 
-```html
-<script
-  src="https://cdn.tailwindcss.com/3.4.1"
-  integrity="sha384-<hash>"
-  crossorigin="anonymous"
-></script>
-```
+Every danger-zone operation must emit an audit event with actor, target,
+decision, request IP, and correlation ID.
 
-Compute the hash with:
-```sh
-curl -s https://cdn.tailwindcss.com/3.4.1 | openssl dgst -sha384 -binary | base64
-```
+Danger-zone operations include:
 
-Pin the hash in the template. Update when the CDN version changes.
+- terminate all sessions
+- revoke a device
+- restore a revoked device
+- rotate a device key
+- issue relay credentials
+- change policy
+- change super-user state
+- rotate secrets
+- force disconnect a session
 
-### DOM construction
+Audit events for these operations are written to `audit_events` even if the
+operation fails or is denied.
 
-All JavaScript in the admin UI must construct DOM elements using
-`document.createElement` and `element.textContent`. **Never use `innerHTML`
-or `insertAdjacentHTML` with user-controlled strings.** This applies to all
-row renderers, confirmation dialogs, and dynamic content.
+## Logging rules
 
-This is enforced by a pre-commit hook that rejects any `.html` or `.js` file
-containing `innerHTML` or `insertAdjacentHTML` where the argument is not a
-static string literal.
+- Never log raw bearer credentials, pairing codes, device codes, refresh
+  tokens, or HMAC inputs.
+- Error logs may include credential IDs, session IDs, and truncated public keys.
+- Security denials should log the rate-limit bucket key, not the secret input.
 
----
+## Replay resistance
 
-## Audit events for danger-zone operations
+Replay protection applies to device-authenticated requests:
 
-The following operations must always emit an `audit_events` row, regardless of
-outcome:
+- timestamp window: 30 seconds
+- nonce uniqueness: enforced in Redis for the full timestamp window
+- body integrity: `body_sha256` is part of the binding MAC
 
-| Operation | `event_type` | Notes |
-|---|---|---|
-| Successful SSO login | `user.login` | Include session token ID |
-| Failed token validation | `user.login_failed` | Include reason code |
-| Device enrollment | `device.enrolled` | Include WG public key fingerprint |
-| Device revocation | `device.revoked` | Include actor and reason |
-| Device credential revocation | `device.credential_revoked` | |
-| WG key rotation | `device.key_rotated` | Include old + new key fingerprints |
-| Policy deny on connect | `session.policy_denied` | Include deny reason |
-| Relay credential issued | `relay.credential_issued` | Include expiry |
-| Pair code claimed | `pair_code.claimed` | Include admin user who claimed |
-| Super user action (any) | (existing type + `is_super_action: true` in detail) | |
-
-Audit events are written synchronously within the same database transaction as
-the state change, so they cannot be lost if the server restarts mid-operation.
-
----
-
-## Internal session tokens
-
-Internal session tokens (issued to users after SSO login, distinct from device
-credentials) are HS256-signed JWTs using `INTERNAL_SESSION_SECRET`.
-
-Claims:
-
-```json
-{
-  "sub": "<user.id (UUID)>",
-  "iss": "silkie",
-  "aud": "<UOA_DOMAIN>",
-  "iat": 1700000000,
-  "exp": 1700086400,   // 24 hours
-  "jti": "<random UUID>",
-  "is_super": true
-}
-```
-
-- Tokens are not stored on the server — stateless validation via HMAC.
-- `jti` is checked against a Redis blocklist to support explicit logout
-  (`POST /v1/sessions/disconnect` adds `jti` to `silkie:revoked_jtis:{jti}`,
-  TTL = token remaining lifetime).
-- Token lifetime: 24 hours. No refresh token for the admin UI — users re-login
-  via UOA SSO when the token expires.
-
----
-
-## WireGuard key security
-
-- The server's WireGuard private key is generated once and stored in the
-  `wg_keys` Docker volume (outside the container image layer).
-- Device WireGuard private keys are generated on-device and never transmitted.
-  The server stores only the public key (`device_keys.public_key`).
-- On key rotation: the old public key is retained in `device_keys` with
-  `is_current = FALSE` for audit purposes. The WireGuard peer table is updated
-  atomically: new key added, old key removed.
-
----
-
-## Secrets checklist
-
-Before going to production, verify:
-
-- [ ] `INTERNAL_SESSION_SECRET` is at least 512 bits (64 random bytes, base64-encoded)
-- [ ] `COTURN_SECRET` is at least 256 bits
-- [ ] `UOA_SHARED_SECRET` matches the value in the UOA dashboard
-- [ ] `POSTGRES_PASSWORD` and `REDIS_PASSWORD` are unique, not reused
-- [ ] `.env` is in `.gitignore` and has never been committed
-- [ ] Caddy TLS certificate is valid and auto-renewing
-- [ ] `server` container is not exposed directly to the internet (only via Caddy)
-- [ ] coturn is configured with `no-tcp-relay` and `realm` set to your domain
-- [ ] CSP header is active on all HTML responses
-- [ ] SRI hashes are pinned for all CDN assets
+If a request is replayed inside the timestamp window but with the same nonce,
+it is rejected.

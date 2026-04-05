@@ -1,28 +1,6 @@
-# Database Schema
-
-This is the authoritative PostgreSQL schema for the Silkie MVP control plane.
-It covers every durable table currently required by the docs: `User`,
-`Device`, `DeviceKey`, `Service`, `ConnectSession`, `RelayCredential`,
-`RelayAllocation`, `AuditEvent`, `PairCode`, and `DeviceCode`.
-
-Notes:
-
-- Table names use plural snake case.
-- IDs are UUIDs generated in Postgres.
-- Pairing and device-auth flows store only hashes of bearer secrets or codes.
-- Candidate exchange is buffered in Redis while the session is in flight, then
-  written back into `connect_sessions` for audit.
-
-## Extensions
-
-```sql
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS citext;
-```
 
-## `users`
-
-```sql
 CREATE TABLE users (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     external_id     text NOT NULL UNIQUE,
@@ -41,11 +19,7 @@ CREATE INDEX idx_users_status
 
 CREATE INDEX idx_users_last_login_at
     ON users (last_login_at DESC NULLS LAST);
-```
 
-## `devices`
-
-```sql
 CREATE TABLE devices (
     id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_user_id            uuid NOT NULL
@@ -108,11 +82,7 @@ CREATE INDEX idx_devices_tags_gin
 
 CREATE INDEX idx_devices_capabilities_gin
     ON devices USING gin (capabilities);
-```
 
-## `device_keys`
-
-```sql
 CREATE TABLE device_keys (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id           uuid NOT NULL
@@ -140,11 +110,7 @@ CREATE UNIQUE INDEX uq_device_keys_active_per_device
 
 CREATE INDEX idx_device_keys_device_created_at
     ON device_keys (device_id, created_at DESC);
-```
 
-## `services`
-
-```sql
 CREATE TABLE services (
     id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     device_id        uuid NOT NULL
@@ -179,11 +145,7 @@ CREATE INDEX idx_services_tags_gin
 
 CREATE INDEX idx_services_metadata_gin
     ON services USING gin (metadata);
-```
 
-## `connect_sessions`
-
-```sql
 CREATE TABLE connect_sessions (
     id                         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     requester_user_id          uuid NOT NULL
@@ -241,11 +203,7 @@ CREATE INDEX idx_connect_sessions_requester_candidates_gin
 
 CREATE INDEX idx_connect_sessions_target_candidates_gin
     ON connect_sessions USING gin (target_candidate_set);
-```
 
-## `relay_credentials`
-
-```sql
 CREATE TABLE relay_credentials (
     id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     connect_session_id uuid NOT NULL
@@ -269,11 +227,7 @@ CREATE INDEX idx_relay_credentials_session
 
 CREATE INDEX idx_relay_credentials_expires_at
     ON relay_credentials (expires_at);
-```
 
-## `relay_allocations`
-
-```sql
 CREATE TABLE relay_allocations (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     connect_session_id  uuid NOT NULL
@@ -318,11 +272,7 @@ ALTER TABLE connect_sessions
     FOREIGN KEY (selected_relay_allocation_id)
     REFERENCES relay_allocations(id)
     ON DELETE SET NULL;
-```
 
-## `audit_events`
-
-```sql
 CREATE TABLE audit_events (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     event_uuid      uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -363,11 +313,7 @@ CREATE INDEX idx_audit_events_target
 
 CREATE INDEX idx_audit_events_metadata_gin
     ON audit_events USING gin (metadata);
-```
 
-## `pair_codes`
-
-```sql
 CREATE TABLE pair_codes (
     id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     code_hash               bytea NOT NULL UNIQUE
@@ -406,11 +352,7 @@ CREATE INDEX idx_pair_codes_locked_until
 
 CREATE INDEX idx_pair_codes_status_expires_at
     ON pair_codes (status, expires_at);
-```
 
-## `device_codes`
-
-```sql
 CREATE TABLE device_codes (
     id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     device_code_hash        bytea NOT NULL UNIQUE
@@ -446,4 +388,3 @@ CREATE INDEX idx_device_codes_status_expires_at
 
 CREATE INDEX idx_device_codes_authorized_user
     ON device_codes (authorized_user_id, created_at DESC);
-```

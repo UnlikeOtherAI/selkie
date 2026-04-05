@@ -1,330 +1,330 @@
 # Deployment
 
-This document covers self-hosting the Silkie control server: Docker Compose
-setup, TLS termination, secret injection, scaling, and operational procedures.
+This document defines the production deployment model for the Silkie control
+plane. The baseline runtime is Docker Compose with four core services:
+PostgreSQL, Redis, coturn, and the Go server. Caddy sits in front as the TLS
+terminator and reverse proxy.
 
----
+## Topology
 
-## Prerequisites
+```text
+Internet
+  |
+  v
+Caddy :443/:80
+  |
+  +--> server :8080
+  |
+  +--> static admin UI (proxied from server)
 
-- Docker Engine 24+ and Docker Compose v2
-- A domain name pointing to your server's public IP
-- Ports 80, 443, and 3478 (TURN UDP) open in your firewall
-
----
-
-## Quickstart — single node
-
-```sh
-cp .env.example .env
-# Edit .env with real secrets before proceeding
-
-docker compose up -d
+server --> PostgreSQL :5432
+server --> Redis :6379
+server --> coturn TURN REST auth + health checks
+clients --> coturn :3478/udp,tcp and :5349/tls (relay path)
 ```
-
-The Compose file starts four services: `postgres`, `redis`, `coturn`, and
-`server`. A fifth service, `caddy`, handles TLS termination.
-
----
 
 ## Docker Compose
 
-```yaml
-# docker-compose.yml
-version: "3.9"
+The minimum local or single-node production layout is:
 
+```yaml
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     restart: unless-stopped
     environment:
+      POSTGRES_DB: silkie
       POSTGRES_USER: silkie
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: silkie
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U silkie"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD}
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
   coturn:
-    image: coturn/coturn:4.6-alpine
+    image: coturn/coturn:4.6
     restart: unless-stopped
-    network_mode: host     # required for TURN; see note below
-    environment:
-      TURN_STATIC_AUTH_SECRET: ${COTURN_SECRET}
-    command: >
-      turnserver
-        --use-auth-secret
-        --static-auth-secret=${COTURN_SECRET}
-        --realm=${UOA_DOMAIN}
-        --listening-port=3478
-        --tls-listening-port=5349
-        --no-tcp-relay
-        --log-file=stdout
+    network_mode: host
+    command:
+      - -n
+      - --use-auth-secret
+      - --static-auth-secret=${COTURN_SECRET}
+      - --realm=${UOA_DOMAIN}
+      - --external-ip=${TURN_HOST}
+      - --listening-port=${TURN_PORT}
+      - --tls-listening-port=5349
+    env_file:
+      - .env
 
   server:
     image: ghcr.io/unlikeotherai/silkie-server:latest
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - postgres
+      - redis
+      - coturn
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgres://silkie:${POSTGRES_PASSWORD}@postgres:5432/silkie?sslmode=disable
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
-      UOA_BASE_URL: ${UOA_BASE_URL}
-      UOA_DOMAIN: ${UOA_DOMAIN}
-      UOA_SHARED_SECRET: ${UOA_SHARED_SECRET}
-      UOA_AUDIENCE: ${UOA_AUDIENCE}
-      UOA_CONFIG_URL: ${UOA_CONFIG_URL}
-      UOA_REDIRECT_URL: ${UOA_REDIRECT_URL}
-      INTERNAL_SESSION_SECRET: ${INTERNAL_SESSION_SECRET}
-      COTURN_SECRET: ${COTURN_SECRET}
-      TURN_HOST: ${TURN_HOST}
-      TURN_PORT: ${TURN_PORT}
-      WG_OVERLAY_CIDR: ${WG_OVERLAY_CIDR}
-      WG_INTERFACE_NAME: ${WG_INTERFACE_NAME}
-      SERVER_PORT: ${SERVER_PORT:-8080}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "127.0.0.1:8080:8080"   # exposed only to Caddy, not the internet
-    volumes:
-      - wg_keys:/var/lib/silkie/wg    # WireGuard server keys persist across restarts
-    cap_add:
-      - NET_ADMIN      # required for WireGuard interface management
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      SERVER_PORT: ${SERVER_PORT}
+      LOG_LEVEL: ${LOG_LEVEL}
+    command: ["/bin/sh", "-lc", "control-server migrate && exec control-server serve"]
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2
     restart: unless-stopped
+    depends_on:
+      - server
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on:
-      server:
-        condition: service_healthy
 
 volumes:
   postgres_data:
   redis_data:
-  wg_keys:
   caddy_data:
   caddy_config:
 ```
 
-**coturn network_mode: host** — TURN requires the server to see the client's
-real source IP for NAT traversal. Docker's network bridge rewrites source IPs,
-breaking TURN. Running coturn in host network mode is the standard workaround
-for single-node deployments.
+Notes:
 
----
+- `coturn` needs host networking or equivalent direct UDP/TCP exposure.
+- The server stays on a private container network; only Caddy and coturn are
+  internet-facing.
+- `control-server migrate && control-server serve` is required. If migration
+  fails, the container must exit non-zero and never start the HTTP server.
 
-## Caddyfile
+## TLS termination with Caddy
+
+Caddy is the only TLS endpoint. The Go server listens on plain HTTP on
+`SERVER_PORT` behind it.
 
 ```caddyfile
-your.domain.com {
-    reverse_proxy server:8080
+silkie.example.com {
+  encode zstd gzip
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    Referrer-Policy "no-referrer"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+  }
+
+  reverse_proxy server:${SERVER_PORT}
 }
 ```
 
-Caddy obtains a Let's Encrypt TLS certificate automatically on first request.
-For internal/private domains, replace with `tls internal` (requires a Caddy-
-compatible local CA setup).
+Operational rules:
 
----
+- TLS certificates are managed by Caddy, not by the Go server.
+- The server must trust `X-Forwarded-For` and `X-Forwarded-Proto` only from
+  the Caddy container or private ingress network.
+- SSE responses must disable proxy buffering and keep idle timeouts long
+  enough for multi-hour event streams.
 
 ## Secret injection
 
-All secrets come from environment variables, sourced from `.env`. Never
-hard-code secrets in `docker-compose.yml` or commit `.env`.
+Secrets are injected only through environment variables or container-runtime
+secret mounts that are converted to env at process start. Nothing secret is
+committed to the repo.
 
-Required secrets and recommended generation:
+Required secrets:
 
-| Variable | Generate with |
+| Variable | Purpose |
 |---|---|
-| `POSTGRES_PASSWORD` | `openssl rand -base64 32` |
-| `REDIS_PASSWORD` | `openssl rand -base64 32` |
-| `INTERNAL_SESSION_SECRET` | `openssl rand -base64 64` |
-| `COTURN_SECRET` | `openssl rand -base64 32` |
-| `UOA_SHARED_SECRET` | From UOA dashboard |
+| `UOA_SHARED_SECRET` | UOA HS256 signing and verification secret |
+| `INTERNAL_SESSION_SECRET` | HS256 key for Silkie-issued internal JWTs |
+| `COTURN_SECRET` | TURN REST API HMAC secret shared with coturn |
+| `POSTGRES_PASSWORD` | Postgres password when Compose provisions the DB |
 
----
+Rules:
 
-## Database migrations
+- `INTERNAL_SESSION_SECRET` must be distinct from `UOA_SHARED_SECRET`.
+- `COTURN_SECRET` must be shared only between the server and coturn.
+- Secrets must never be logged, echoed in health endpoints, or exposed through
+  admin APIs.
 
-Migrations run automatically on server startup before the HTTP listener opens.
-The server will refuse to start if migrations fail.
+## Migration on startup
 
-To run migrations manually (e.g. to inspect the SQL before applying):
+Startup order is strict:
 
-```sh
-docker compose run --rm server migrate up
-docker compose run --rm server migrate status
-docker compose run --rm server migrate down 1   # roll back one step
-```
+1. Wait for PostgreSQL readiness.
+2. Run `control-server migrate`.
+3. Acquire singleton worker locks.
+4. Start HTTP listeners.
+5. Begin background loops only after readiness probes succeed.
 
----
+Constraints:
+
+- Migrations are SQL-first and idempotent.
+- Migration failure is fatal for that instance.
+- Only one instance needs to apply a given migration, but every instance may
+  attempt startup migration because PostgreSQL transaction locking serializes
+  it safely.
 
 ## Graceful shutdown
 
-The server listens for `SIGTERM` (sent by Docker on `docker compose stop`).
-On receipt:
+On `SIGTERM` or container stop:
 
-1. HTTP listener stops accepting new connections.
-2. In-flight requests are given 30 seconds to complete.
-3. Background workers (heartbeat monitor, CIDR reclaim) are signalled to stop.
-4. Database and Redis connections are closed.
-5. WireGuard interface is brought down.
-6. Process exits 0.
+1. Mark the instance unready immediately so Caddy stops sending new requests.
+2. Stop accepting new HTTP connections.
+3. Keep existing SSE streams open for a short drain window so connected CLIs
+   can reconnect cleanly.
+4. Flush final audit events and trace exporters.
+5. Release advisory locks and stop background workers.
+6. Exit before the orchestrator hard-kills the process.
 
-Set `SIGTERM_TIMEOUT=60` in the environment to extend the drain window for
-long-lived SSE connections.
+Recommended timings:
 
----
+| Phase | Budget |
+|---|---|
+| Readiness off + stop new requests | immediate |
+| SSE drain window | 15s |
+| Worker shutdown + telemetry flush | 15s |
+| Total termination grace period | 30s |
 
 ## Horizontal scaling
 
-The control server is stateless for all HTTP request processing. To run
-multiple instances behind a load balancer:
+Silkie can run multiple stateless server instances, but only if all state that
+matters outside one process is externalized.
 
-### What must be in Redis (not in-process)
+Required shared components:
 
-| State | Redis key pattern |
+| Concern | Shared backend |
 |---|---|
-| Pair code TTL and status | `silkie:pair:{code}` |
-| Device code TTL and status | `silkie:device_code:{code}` |
-| Rate limit counters | `silkie:ratelimit:{endpoint}:{key}` |
-| SSE fan-out channel | `silkie:device:{id}:events` (pub/sub) |
-| Distributed lock for singleton workers | Implemented via Postgres advisory locks |
+| durable state | PostgreSQL |
+| rate limits, locks, live fan-out | Redis |
+| TURN relay | coturn |
+| TLS ingress | Caddy or external load balancer |
 
 ### SSE fan-out
 
-Each server instance holds SSE connections for the clients connected to it.
-When a session event occurs on any instance, it publishes to the Redis channel
-for that device:
+The device event stream is `GET /v1/devices/{id}/events` and must work across
+multiple server instances. That means in-memory broadcast is insufficient.
 
-```
-PUBLISH silkie:device:{device_id}:events <json_event>
-```
+Required pattern:
 
-Every instance subscribed to that channel (because a client is connected to
-it) forwards the event to its SSE stream. This allows any number of server
-instances to serve SSE without coordinating directly.
+- The instance that creates an event publishes it to Redis:
+  `PUBLISH silkie:device:{id}:events <json-payload>`.
+- Every server instance subscribes to the device channels for locally attached
+  SSE clients.
+- The SSE handler writes the Redis event payload directly to the open stream.
 
-### Load balancer requirements
+If this pub/sub layer is missing, only the instance that created the event can
+reach its own SSE clients, which breaks scaled deployments.
 
-- Use any HTTP load balancer (Caddy upstream, nginx, HAProxy, cloud LB).
-- For SSE clients (admin UI polling): use sticky sessions OR configure the
-  load balancer with long connection timeouts (≥ 5 minutes). Caddy handles
-  this automatically with `reverse_proxy`.
-- All instances must share the same `INTERNAL_SESSION_SECRET` and
-  `UOA_SHARED_SECRET`.
+## Leader election for singleton workers
 
----
+Some loops must run exactly once cluster-wide:
 
-## Leader election — singleton workers
+- expired session reaper
+- overlay IP reclaim worker
+- audit hash chain maintenance
+- version announcement / release sync
 
-Some workers must run on exactly one instance at a time:
+Use PostgreSQL advisory locks, not Redis locks, for these workers so lock
+ownership follows the database transaction and survives Redis restarts cleanly.
 
-- **Overlay IP reclaim** — returns revoked device IPs to the pool after 24h grace.
-- **Pair code / device code expiry sweep** — marks expired codes in Postgres.
-- **Heartbeat monitor** — marks devices offline after missed heartbeats.
+Example:
 
-These workers use **PostgreSQL advisory locks** for leader election:
-
-```go
-// Try to acquire advisory lock (non-blocking)
-acquired, err := db.Exec("SELECT pg_try_advisory_lock($1)", workerID)
-if !acquired {
-    return  // another instance holds the lock
-}
-defer db.Exec("SELECT pg_advisory_unlock($1)", workerID)
-
-// Run worker logic...
+```sql
+SELECT pg_try_advisory_lock(8246351, 1);
 ```
 
-Worker IDs are stable integers defined as constants in the codebase. The lock
-is held for the duration of the worker run and released at the end (or
-implicitly when the DB connection closes on shutdown).
+Rules:
 
----
+- Each singleton worker gets its own fixed lock tuple.
+- If lock acquisition fails, the instance remains a normal API/SSE node and
+  does not run that worker.
+- Locks are released automatically on connection loss; workers must stop when
+  their DB session drops.
 
-## Blue/green deployment
+## Blue/green deploy constraints
 
-1. Bring up the new version (`green`) pointing at the same database.
-2. Run migrations on `green` before switching traffic. Migrations must be
-   backwards-compatible: only add columns (with defaults or nullable), never
-   drop or rename. See version skew policy below.
-3. Switch the load balancer to route new connections to `green`.
-4. Allow `blue` to drain (existing SSE connections, in-flight requests).
-5. Stop `blue` once connections have drained (check `server_connections`
-   metric, or wait a fixed drain window of 60s).
+Blue/green is supported with constraints:
 
----
+1. Database migrations must be backward-compatible first, destructive later.
+   Add columns and tables before new code depends on them; drop old columns
+   only after all old instances are gone.
+2. Redis pub/sub payloads for SSE must remain compatible across the blue and
+   green versions during overlap.
+3. coturn credentials must validate against the same `COTURN_SECRET` on both
+   stacks during cutover.
+4. Advisory-lock worker IDs must not change between the blue and green
+   versions, or both stacks may think they own the same singleton job.
+5. Existing SSE clients will reconnect during cutover. The reconnect path must
+   be safe and idempotent.
+
+Do not run blue/green if the release contains a breaking schema migration that
+the old binary cannot tolerate.
+
+## CLI auto-update strategy
+
+The CLI is installed from npm but updated under server policy control.
+
+Policy:
+
+- The server publishes the latest compatible CLI version and minimum required
+  CLI version in its version metadata endpoint.
+- The daemon checks on startup and once every 24 hours.
+- Patch and minor updates are downloaded in the background, then applied by the
+  platform service manager restart path.
+- No forced hot-reload: the current daemon keeps running until the next
+  restart or a user-triggered `silkie service restart`.
+
+Operationally:
+
+- macOS updater command: `npm install -g silkie@<version>`
+- Linux updater command: `npm install -g silkie@<version>`
+- Auto-update must be disabled if the package manager path is unknown or the
+  install was not global.
 
 ## Version skew policy
 
-The CLI daemon and control server must be compatible across one minor version.
+Silkie is not wire-compatible across arbitrary versions. The server defines the
+compatibility window.
 
-| Server version | Compatible CLI versions |
+| Component pair | Supported skew |
 |---|---|
-| 1.2.x | 1.1.x, 1.2.x |
-| 1.3.x | 1.2.x, 1.3.x |
+| server N ↔ CLI N | fully supported |
+| server N ↔ CLI N-1 minor | supported |
+| server N ↔ CLI older than N-1 minor | unsupported; CLI must upgrade |
+| CLI newer than server by patch level | tolerated |
+| CLI newer than server by minor level | rejected for enrollment; existing sessions may continue until restart |
 
-- The server must never remove or rename a REST field while a previous CLI
-  minor version is still in use.
-- Deprecated fields are ignored by new CLI versions and remain present in
-  responses for one minor version.
-- The server returns `X-Silkie-Min-CLI-Version` in heartbeat responses; the
-  CLI logs a warning if its version is below the minimum.
+Rules:
 
----
+- Enroll and key rotation require an explicitly supported version pair.
+- If the CLI is too old, the server returns a structured upgrade-required
+  response instead of partially serving the request.
+- If the server becomes unreachable during skew or upgrade mismatch, the CLI
+  keeps its last-known WireGuard config and retries control-plane calls later.
 
-## CLI auto-update
+## Health checks
 
-The CLI does not auto-update itself. Updates are distributed via npm:
+Recommended probes:
 
-```sh
-npm install -g silkie@latest
-```
-
-For managed deployments, wrap this in a cron job or use a configuration
-management tool (Ansible, Puppet, Chef). The server's `X-Silkie-Min-CLI-Version`
-header can be used to detect when an update is required.
-
----
-
-## Health and readiness
-
-| Endpoint | Returns |
+| Path | Meaning |
 |---|---|
-| `GET /healthz` | `{"status":"ok"}` if the server is alive |
-| `GET /readyz` | `{"status":"ok"}` if postgres and redis are reachable |
-| `GET /version` | `{"version":"1.2.3","min_cli_version":"1.1.0"}` |
+| `GET /healthz` | process is alive |
+| `GET /readyz` | database, Redis, and singleton worker prerequisites are ready |
+| `GET /metrics` | Prometheus/OpenTelemetry scrape surface |
 
-Use `/readyz` for load balancer health checks and Kubernetes readiness probes.
-Use `/healthz` for liveness probes.
+`/readyz` must fail if:
+
+- PostgreSQL is unavailable
+- Redis is unavailable
+- startup migration has not finished
+- the server has not yet subscribed to Redis pub/sub
