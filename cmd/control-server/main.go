@@ -22,8 +22,11 @@ import (
 	"github.com/unlikeotherai/silkie/internal/config"
 	"github.com/unlikeotherai/silkie/internal/devices"
 	"github.com/unlikeotherai/silkie/internal/overlay"
+	"github.com/unlikeotherai/silkie/internal/policy"
+	"github.com/unlikeotherai/silkie/internal/services"
 	"github.com/unlikeotherai/silkie/internal/sessions"
 	"github.com/unlikeotherai/silkie/internal/store"
+	"github.com/unlikeotherai/silkie/internal/telemetry"
 )
 
 func main() {
@@ -38,6 +41,17 @@ func main() {
 }
 
 func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
+	// Initialize OpenTelemetry (noop when endpoint is empty).
+	otelShutdown, err := telemetry.Init(ctx, telemetry.Config{
+		Endpoint:       cfg.OTELExporterOTLPEndpoint,
+		ServiceName:    "silkie-server",
+		ServiceVersion: "0.1.0",
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("init telemetry: %w", err)
+	}
+	defer otelShutdown(ctx) //nolint:errcheck // best-effort flush on exit
+
 	db, err := store.OpenDB(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -62,10 +76,17 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		}
 	}
 
+	// Policy engine (allow-all when OPA_ENDPOINT is empty).
+	policyEngine := policy.New(cfg.OPAEndpoint, logger)
+	_ = policyEngine // wired into session creation when policy checks are enabled
+
 	ready := &atomic.Bool{}
 	ready.Store(true)
 
 	r := chi.NewRouter()
+
+	// OTel HTTP middleware (noop when endpoint is empty).
+	r.Use(telemetry.Middleware(cfg.OTELExporterOTLPEndpoint))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -93,8 +114,9 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 	auditor := audit.New(db, logger)
 
 	auth.NewCallbackHandler(db, cfg, auditor, logger).Mount(r)
-	admin.New().Mount(r)
+	admin.New(db, logger, cfg).Mount(r)
 	devices.New(db, logger, cfg, overlayAlloc, auditor).Mount(r)
+	services.New(db, logger, cfg).Mount(r)
 	sessions.New(db, rdb, logger, cfg).Mount(r)
 
 	srv := &http.Server{

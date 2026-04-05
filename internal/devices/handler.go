@@ -49,6 +49,8 @@ func (h *Handler) Mount(r chi.Router) {
 		r.Get("/v1/devices", h.handleListDevices)
 		r.Get("/v1/devices/{id}", h.handleGetDevice)
 		r.Post("/v1/devices/{id}/heartbeat", h.handleHeartbeat)
+		r.Post("/v1/devices/{id}/rotate-key", h.handleRotateKey)
+		r.Get("/v1/devices/{id}/peer-config", h.handleGetPeerConfig)
 		r.Delete("/v1/devices/{id}", h.handleDeleteDevice)
 	})
 }
@@ -248,7 +250,7 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			external_endpoint_port = $2,
 			agent_version = $3,
 			disk_free_bytes = $4,
-			last_heartbeat_at = now(),
+			last_seen_at = now(),
 			updated_at = now()
 		where id = $5 and owner_user_id = $6`,
 		req.ExternalEndpointHost,

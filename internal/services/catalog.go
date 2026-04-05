@@ -126,7 +126,7 @@ func (h *Handler) handleListAllServices(w http.ResponseWriter, r *http.Request) 
 		`select coalesce(json_agg(row_to_json(s)), '[]'::json)
 		from (
 			select ds.*
-			from device_services ds
+			from services ds
 			join devices d on d.id = ds.device_id
 			where d.owner_user_id = $1
 			order by d.hostname, ds.name
@@ -178,7 +178,7 @@ func (h *Handler) replaceDeviceServices(ctx context.Context, deviceID string, en
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after commit
 
-	if _, execErr := tx.Exec(ctx, `delete from device_services where device_id = $1`, deviceID); execErr != nil {
+	if _, execErr := tx.Exec(ctx, `delete from services where device_id = $1`, deviceID); execErr != nil {
 		return fmt.Errorf("failed to replace services: %w", execErr)
 	}
 
@@ -218,7 +218,7 @@ func insertServiceEntry(ctx context.Context, tx pgx.Tx, deviceID string, entry s
 
 	_, err := tx.Exec(
 		ctx,
-		`insert into device_services (device_id, name, protocol, local_bind, exposure_type, auth_mode, health_status, tags)
+		`insert into services (device_id, name, protocol, local_bind, exposure_type, auth_mode, health_status, tags)
 		values ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		deviceID,
 		entry.Name,
@@ -244,7 +244,7 @@ func (h *Handler) writeDeviceServices(w http.ResponseWriter, r *http.Request, de
 		`select coalesce(json_agg(row_to_json(s)), '[]'::json)
 		from (
 			select *
-			from device_services
+			from services
 			where device_id = $1
 			order by name
 		) s`,

@@ -65,7 +65,9 @@ func Init(ctx context.Context, cfg Config, logger *zap.Logger) (shutdown func(co
 		otlpmetricgrpc.WithInsecure(),
 	)
 	if err != nil {
-		_ = tp.Shutdown(ctx)
+		if tpErr := tp.Shutdown(ctx); tpErr != nil {
+			return nil, tpErr
+		}
 		return nil, err
 	}
 
@@ -89,7 +91,7 @@ func Init(ctx context.Context, cfg Config, logger *zap.Logger) (shutdown func(co
 }
 
 // Middleware returns an HTTP middleware that instruments every request with
-// OpenTelemetry spans and metrics. When OTel has not been initialised (no
+// OpenTelemetry spans and metrics. When OTel has not been initialized (no
 // endpoint configured), it returns a passthrough no-op middleware.
 func Middleware(endpoint string) func(http.Handler) http.Handler {
 	if endpoint == "" {

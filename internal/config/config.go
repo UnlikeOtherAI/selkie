@@ -23,6 +23,9 @@ type Config struct {
 	CoturnSecret             string
 	WGOverlayCIDR            string
 	WGInterfaceName          string
+	WGServerPublicKey        string
+	WGServerEndpoint         string
+	WGServerPort             int
 	ServerPort               int
 	LogLevel                 string
 	OTELExporterOTLPEndpoint string
@@ -47,6 +50,9 @@ func Load() Config {
 		CoturnSecret:             os.Getenv("COTURN_SECRET"),
 		WGOverlayCIDR:            os.Getenv("WG_OVERLAY_CIDR"),
 		WGInterfaceName:          os.Getenv("WG_INTERFACE_NAME"),
+		WGServerPublicKey:        os.Getenv("WG_SERVER_PUBLIC_KEY"),
+		WGServerEndpoint:         os.Getenv("WG_SERVER_ENDPOINT"),
+		WGServerPort:             getenvInt("WG_SERVER_PORT", 51820),
 		ServerPort:               getenvInt("SERVER_PORT", 8080),
 		LogLevel:                 getenv("LOG_LEVEL", "info"),
 		OTELExporterOTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),

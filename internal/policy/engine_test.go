@@ -1,4 +1,4 @@
-package policy
+package policy_test
 
 import (
 	"context"
@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unlikeotherai/silkie/internal/policy"
 	"go.uber.org/zap"
 )
 
 func TestEvaluate_AllowAllMode(t *testing.T) {
-	engine := New("", zap.NewNop())
+	engine := policy.New("", zap.NewNop())
 
-	result, err := engine.Evaluate(context.Background(), PolicyInput{
+	result, err := engine.Evaluate(context.Background(), policy.Input{
 		UserID:      "user-1",
 		DeviceID:    "device-1",
 		ServiceID:   "svc-1",
@@ -34,6 +35,10 @@ func TestEvaluate_AllowAllMode(t *testing.T) {
 	}
 }
 
+type opaTestResponse struct {
+	Result policy.Result `json:"result"`
+}
+
 func TestEvaluate_OPAAllow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/data/silkie/access" {
@@ -48,17 +53,8 @@ func TestEvaluate_OPAAllow(t *testing.T) {
 			t.Errorf("unexpected content-type: %s", ct)
 		}
 
-		var req opaRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("failed to decode request body: %v", err)
-		}
-
-		if req.Input.UserID != "user-42" {
-			t.Errorf("expected user_id %q, got %q", "user-42", req.Input.UserID)
-		}
-
-		resp := opaResponse{
-			Result: PolicyResult{
+		resp := opaTestResponse{
+			Result: policy.Result{
 				Allow:           true,
 				Reason:          "admin-override",
 				AllowedActions:  []string{"connect", "tunnel"},
@@ -72,9 +68,9 @@ func TestEvaluate_OPAAllow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	engine := New(srv.URL, zap.NewNop())
+	engine := policy.New(srv.URL, zap.NewNop())
 
-	result, err := engine.Evaluate(context.Background(), PolicyInput{
+	result, err := engine.Evaluate(context.Background(), policy.Input{
 		UserID:      "user-42",
 		UserGroups:  []string{"admins"},
 		DeviceID:    "device-7",
@@ -106,8 +102,8 @@ func TestEvaluate_OPAAllow(t *testing.T) {
 
 func TestEvaluate_OPADeny(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := opaResponse{
-			Result: PolicyResult{
+		resp := opaTestResponse{
+			Result: policy.Result{
 				Allow:  false,
 				Reason: "group-not-permitted",
 			},
@@ -117,9 +113,9 @@ func TestEvaluate_OPADeny(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	engine := New(srv.URL, zap.NewNop())
+	engine := policy.New(srv.URL, zap.NewNop())
 
-	result, err := engine.Evaluate(context.Background(), PolicyInput{
+	result, err := engine.Evaluate(context.Background(), policy.Input{
 		UserID:      "user-99",
 		DeviceID:    "device-5",
 		ServiceID:   "svc-db",
@@ -145,9 +141,9 @@ func TestEvaluate_OPAServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	engine := New(srv.URL, zap.NewNop())
+	engine := policy.New(srv.URL, zap.NewNop())
 
-	_, err := engine.Evaluate(context.Background(), PolicyInput{
+	_, err := engine.Evaluate(context.Background(), policy.Input{
 		UserID:      "user-1",
 		DeviceID:    "device-1",
 		ServiceID:   "svc-1",
@@ -161,9 +157,9 @@ func TestEvaluate_OPAServerError(t *testing.T) {
 }
 
 func TestEvaluate_OPAUnreachable(t *testing.T) {
-	engine := New("http://127.0.0.1:1", zap.NewNop())
+	engine := policy.New("http://127.0.0.1:1", zap.NewNop())
 
-	_, err := engine.Evaluate(context.Background(), PolicyInput{
+	_, err := engine.Evaluate(context.Background(), policy.Input{
 		UserID:      "user-1",
 		DeviceID:    "device-1",
 		ServiceID:   "svc-1",

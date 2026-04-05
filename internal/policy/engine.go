@@ -13,28 +13,28 @@ import (
 	"go.uber.org/zap"
 )
 
-// PolicyInput describes the access request sent to OPA for evaluation.
-type PolicyInput struct {
-	UserID      string   `json:"user_id"`
-	UserGroups  []string `json:"user_groups"`
-	DeviceID    string   `json:"device_id"`
-	DeviceTags  []string `json:"device_tags"`
-	DeviceState string   `json:"device_state"`
-	ServiceID   string   `json:"service_id"`
-	ServiceTags []string `json:"service_tags"`
-	Action      string   `json:"action"`
-	PathType    string   `json:"path_type"`    // "direct" or "relay"
+// Input describes the access request sent to OPA for evaluation.
+type Input struct {
+	UserID      string    `json:"user_id"`
+	UserGroups  []string  `json:"user_groups"`
+	DeviceID    string    `json:"device_id"`
+	DeviceTags  []string  `json:"device_tags"`
+	DeviceState string    `json:"device_state"`
+	ServiceID   string    `json:"service_id"`
+	ServiceTags []string  `json:"service_tags"`
+	Action      string    `json:"action"`
+	PathType    string    `json:"path_type"` // "direct" or "relay"
 	RequestTime time.Time `json:"request_time"`
 }
 
-// PolicyResult holds the decision returned by the policy engine.
-type PolicyResult struct {
-	Allow          bool              `json:"allow"`
-	Reason         string            `json:"reason"`
-	AllowedActions []string          `json:"allowed_actions"`
-	AllowedServices []string         `json:"allowed_services"`
-	TTL            int               `json:"ttl"`
-	AuditLabels    map[string]string `json:"audit_labels"`
+// Result holds the decision returned by the policy engine.
+type Result struct {
+	Allow           bool              `json:"allow"`
+	Reason          string            `json:"reason"`
+	AllowedActions  []string          `json:"allowed_actions"`
+	AllowedServices []string          `json:"allowed_services"`
+	TTL             int               `json:"ttl"`
+	AuditLabels     map[string]string `json:"audit_labels"`
 }
 
 // Engine is a thin HTTP client for Open Policy Agent.
@@ -61,24 +61,24 @@ func New(opaURL string, logger *zap.Logger) *Engine {
 
 // opaRequest wraps the input in the envelope OPA expects.
 type opaRequest struct {
-	Input PolicyInput `json:"input"`
+	Input Input `json:"input"`
 }
 
 // opaResponse is the top-level envelope OPA returns.
 type opaResponse struct {
-	Result PolicyResult `json:"result"`
+	Result Result `json:"result"`
 }
 
 // Evaluate checks whether the given input is permitted.
 // In allow-all mode (empty OPA URL) it returns a permissive result immediately.
-func (e *Engine) Evaluate(ctx context.Context, input PolicyInput) (*PolicyResult, error) {
+func (e *Engine) Evaluate(ctx context.Context, input Input) (*Result, error) {
 	if e.opaURL == "" {
 		e.logger.Debug("policy engine disabled, allowing request",
 			zap.String("user_id", input.UserID),
 			zap.String("device_id", input.DeviceID),
 		)
 
-		return &PolicyResult{
+		return &Result{
 			Allow:  true,
 			Reason: "policy-engine-disabled",
 		}, nil
@@ -101,7 +101,7 @@ func (e *Engine) Evaluate(ctx context.Context, input PolicyInput) (*PolicyResult
 	if err != nil {
 		return nil, fmt.Errorf("OPA request failed: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // best-effort close on HTTP response body
+	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
