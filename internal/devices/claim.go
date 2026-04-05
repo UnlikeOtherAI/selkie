@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/unlikeotherai/silkie/internal/auth"
+	"go.uber.org/zap"
 )
 
 type pairClaimRequest struct {
@@ -150,6 +151,18 @@ VALUES ($1, 1, $2, 'active')
 		return
 	}
 
+	var overlayIP *string
+	if h.overlay != nil {
+		ip, err := h.overlay.AllocateTx(ctx, tx, deviceID)
+		if err != nil {
+			h.logger.Error("allocate overlay ip", zap.Error(err), zap.String("device_id", deviceID))
+			writeError(w, http.StatusInternalServerError, "failed to allocate overlay ip")
+			return
+		}
+		s := ip.String()
+		overlayIP = &s
+	}
+
 	if _, err := tx.Exec(ctx, `
 UPDATE pair_codes
 SET status = 'claimed',
@@ -169,7 +182,7 @@ WHERE id = $3
 
 	writeJSON(w, http.StatusOK, pairClaimResponse{
 		DeviceID:   deviceID,
-		OverlayIP:  nil,
+		OverlayIP:  overlayIP,
 		Credential: credential,
 	})
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/unlikeotherai/silkie/internal/admin"
 	"github.com/unlikeotherai/silkie/internal/auth"
 	"github.com/unlikeotherai/silkie/internal/devices"
+	"github.com/unlikeotherai/silkie/internal/overlay"
 	"github.com/unlikeotherai/silkie/internal/sessions"
 	"github.com/unlikeotherai/silkie/internal/store"
 )
@@ -51,6 +52,14 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 	}
 	defer rdb.Close() //nolint:errcheck
 
+	var overlayAlloc *overlay.Allocator
+	if cfg.WGOverlayCIDR != "" {
+		overlayAlloc, err = overlay.New(db.Pool, cfg.WGOverlayCIDR)
+		if err != nil {
+			return fmt.Errorf("init overlay allocator: %w", err)
+		}
+	}
+
 	ready := &atomic.Bool{}
 	ready.Store(true)
 
@@ -81,7 +90,7 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 
 	auth.NewCallbackHandler(db, cfg).Mount(r)
 	admin.New().Mount(r)
-	devices.New(db, logger, cfg).Mount(r)
+	devices.New(db, logger, cfg, overlayAlloc).Mount(r)
 	sessions.New(db, rdb, logger, cfg).Mount(r)
 
 	srv := &http.Server{

@@ -14,22 +14,24 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/unlikeotherai/silkie/internal/auth"
 	"github.com/unlikeotherai/silkie/internal/config"
+	"github.com/unlikeotherai/silkie/internal/overlay"
 	"github.com/unlikeotherai/silkie/internal/store"
 	"go.uber.org/zap"
 )
 
 type Handler struct {
-	db     *store.DB
-	logger *zap.Logger
-	cfg    config.Config
+	db      *store.DB
+	logger  *zap.Logger
+	cfg     config.Config
+	overlay *overlay.Allocator
 }
 
-func New(db *store.DB, logger *zap.Logger, cfg config.Config) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	return &Handler{db: db, logger: logger, cfg: cfg}
+	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc}
 }
 
 func (h *Handler) Mount(r chi.Router) {
