@@ -37,6 +37,7 @@ func (h *Handler) Mount(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
 		r.Post("/v1/auth/pair/start", h.handlePairStart)
 		r.Get("/v1/auth/pair/status", h.handlePairStatus)
+		r.Post("/v1/auth/pair/claim", h.pairClaim)
 		r.Get("/v1/devices", h.handleListDevices)
 		r.Get("/v1/devices/{id}", h.handleGetDevice)
 		r.Post("/v1/devices/{id}/heartbeat", h.handleHeartbeat)
@@ -85,31 +86,27 @@ func (h *Handler) handlePairStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var createdCode string
-		err = h.db.Pool.QueryRow(
+		_, err = h.db.Pool.Exec(
 			r.Context(),
 			`insert into pair_codes (
-				code,
-				wg_public_key,
-				hostname,
-				os_platform,
-				os_arch,
-				agent_version,
-				owner_user_id,
-				status,
+				code_hash,
+				requested_wg_public_key,
+				requested_hostname,
+				requested_os_platform,
+				requested_os_arch,
+				requested_agent_version,
 				expires_at
-			) values ($1, $2, $3, $4, $5, $6, $7, 'pending', $8) returning code`,
+			) values (sha256($1::bytea), $2, $3, $4, $5, $6, $7)`,
 			code,
 			req.WGPublicKey,
 			req.Hostname,
 			req.OSPlatform,
 			req.OSArch,
 			req.AgentVersion,
-			claims.Sub,
 			time.Now().UTC().Add(10*time.Minute),
-		).Scan(&createdCode)
+		)
 		if err == nil {
-			writeJSON(w, http.StatusOK, map[string]string{"code": createdCode})
+			writeJSON(w, http.StatusOK, map[string]string{"code": code})
 			return
 		}
 
@@ -130,10 +127,9 @@ func (h *Handler) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 	err := h.db.Pool.QueryRow(
 		r.Context(),
 		`select json_build_object(
-			'status', case when status = 'claimed' or credential is not null or wg_config is not null then 'claimed' else 'pending' end,
-			'credential', credential,
-			'wg_config', wg_config
-		) from pair_codes where code = $1 and expires_at > now()`,
+			'status', status,
+			'device_id', claimed_device_id
+		) from pair_codes where code_hash = sha256($1::bytea) and expires_at > now()`,
 		code,
 	).Scan(&payload)
 	if err != nil {
