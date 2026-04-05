@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Silkie — Sign in</title>
+	<link rel="icon" type="image/png" href="/assets/app-icon.png" />
+	<script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+	<script>
+		tailwind.config = {
+			theme: {
+				extend: {
+					fontFamily: {
+						sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+						mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+					},
+					colors: {
+						ink: {
+							950: '#07080b',
+							900: '#0b0d12',
+							800: '#11141b',
+							700: '#1a1e28',
+							600: '#262b38',
+							500: '#3b4250',
+							400: '#6b7387',
+							300: '#a4aabb',
+							200: '#cfd3df',
+							100: '#eceef4',
+						},
+						accent: {
+							400: '#8ef2c4',
+							500: '#4ee8a3',
+							600: '#1fc581',
+						},
+					},
+				},
+			},
+		};
+	</script>
+	<link rel="preconnect" href="https://fonts.googleapis.com" />
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+	<style>
+		html { scroll-behavior: smooth; }
+		body { font-feature-settings: "cv11", "ss01", "ss03"; }
+		.grid-bg {
+			background-image:
+				radial-gradient(circle at 20% 10%, rgba(78, 232, 163, 0.10), transparent 45%),
+				radial-gradient(circle at 80% 0%, rgba(31, 197, 129, 0.08), transparent 55%),
+				linear-gradient(to bottom, #07080b, #0b0d12 40%, #07080b);
+		}
+	</style>
+</head>
+<body class="h-full bg-ink-950 text-ink-100 font-sans antialiased grid-bg flex flex-col items-center justify-center">
+
+	<div class="flex flex-col items-center gap-8">
+
+		<img src="/assets/app-icon.png" alt="Silkie" class="h-28 w-28 rounded-2xl shadow-2xl shadow-accent-500/10 ring-1 ring-white/10" />
+
+		<div class="w-[340px] bg-ink-900/80 border border-ink-800 rounded-2xl p-8 flex flex-col items-center gap-6 shadow-2xl backdrop-blur">
+
+			<div class="text-center space-y-2">
+				<h1 class="text-xl font-bold tracking-tight text-ink-100">Sign in to Silkie</h1>
+				<p class="text-sm text-ink-400">Secure access to your overlay network</p>
+			</div>
+
+			<a
+				href="/auth/login"
+				class="w-full flex items-center justify-center gap-3 bg-accent-500 hover:bg-accent-400 active:bg-accent-600 text-ink-950 text-sm font-semibold px-4 py-3 rounded-xl transition shadow-lg shadow-accent-500/20"
+			>
+				<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+				Sign in with UOA
+			</a>
+
+		</div>
+
+		<p class="text-xs text-ink-500">&copy; 2026 <a href="https://unlikeotherai.com" class="text-ink-300 hover:text-white transition">UnlikeOtherAI Ltd</a> &middot; Apache 2.0</p>
+
+	</div>
+
+</body>
+</html>

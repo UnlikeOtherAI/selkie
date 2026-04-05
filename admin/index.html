@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Silkie — Admin</title>
+	<link rel="icon" type="image/png" href="/assets/app-icon.png" />
+	<script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+	<script>
+		tailwind.config = {
+			theme: {
+				extend: {
+					fontFamily: {
+						sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+						mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+					},
+					colors: {
+						ink: {
+							950: '#07080b',
+							900: '#0b0d12',
+							800: '#11141b',
+							700: '#1a1e28',
+							600: '#262b38',
+							500: '#3b4250',
+							400: '#6b7387',
+							300: '#a4aabb',
+							200: '#cfd3df',
+							100: '#eceef4',
+						},
+						accent: {
+							400: '#8ef2c4',
+							500: '#4ee8a3',
+							600: '#1fc581',
+						},
+					},
+				},
+			},
+		};
+	</script>
+	<link rel="preconnect" href="https://fonts.googleapis.com" />
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+	<style>
+		html { scroll-behavior: smooth; }
+		body { font-feature-settings: "cv11", "ss01", "ss03"; }
+		.hairline { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04); }
+		.tab-active { color: #eceef4; border-color: #4ee8a3; }
+		.tab-inactive { color: #6b7387; border-color: transparent; }
+		.tab-inactive:hover { color: #a4aabb; }
+		.status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+	</style>
+</head>
+<body class="h-full bg-ink-950 text-ink-100 font-sans antialiased flex flex-col">
+
+	<!-- Top nav -->
+	<header class="sticky top-0 z-40 backdrop-blur bg-ink-950/70 border-b border-ink-800">
+		<div class="max-w-7xl mx-auto flex items-center justify-between px-6 h-14">
+			<div class="flex items-center gap-3">
+				<img src="/assets/app-icon.png" alt="" class="h-7 w-7 rounded-lg" />
+				<span class="font-semibold tracking-tight text-sm">Silkie</span>
+			</div>
+			<nav class="flex items-center gap-1">
+				<button onclick="switchTab('devices')" id="tab-devices" class="tab-active text-sm font-medium px-4 py-4 border-b-2 transition">Devices</button>
+				<button onclick="switchTab('sessions')" id="tab-sessions" class="tab-inactive text-sm font-medium px-4 py-4 border-b-2 transition">Sessions</button>
+				<button onclick="switchTab('system')" id="tab-system" class="tab-inactive text-sm font-medium px-4 py-4 border-b-2 transition">System</button>
+			</nav>
+			<div class="flex items-center gap-4">
+				<span id="user-email" class="text-xs text-ink-400 font-mono"></span>
+				<button onclick="logout()" class="text-xs text-ink-400 hover:text-ink-200 transition">Sign out</button>
+			</div>
+		</div>
+	</header>
+
+	<!-- Content -->
+	<main class="flex-1 overflow-y-auto">
+		<div class="max-w-7xl mx-auto px-6 py-8">
+
+			<!-- ===== DEVICES TAB ===== -->
+			<div id="panel-devices" class="space-y-6">
+				<div class="flex items-center justify-between">
+					<h2 class="text-lg font-bold tracking-tight">Devices</h2>
+					<button onclick="openAddDevice()" class="inline-flex items-center gap-2 bg-accent-500 hover:bg-accent-400 text-ink-950 font-semibold rounded-xl px-4 py-2 text-sm transition shadow-lg shadow-accent-500/20">
+						<svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H4a1 1 0 1 1 0-2h5V4a1 1 0 0 1 1-1Z"/></svg>
+						Add Device
+					</button>
+				</div>
+				<div id="devices-loading" class="text-sm text-ink-400">Loading devices...</div>
+				<div id="devices-error" class="hidden text-sm text-red-400"></div>
+				<div id="devices-table-wrap" class="hidden bg-ink-900 border border-ink-800 rounded-2xl overflow-hidden">
+					<table class="w-full text-sm">
+						<thead>
+							<tr class="border-b border-ink-800 text-xs text-ink-400 uppercase tracking-wider">
+								<th class="text-left px-5 py-3 font-medium">Hostname</th>
+								<th class="text-left px-4 py-3 font-medium">Status</th>
+								<th class="text-left px-4 py-3 font-medium">Overlay IP</th>
+								<th class="text-left px-4 py-3 font-medium">Platform</th>
+								<th class="text-left px-4 py-3 font-medium">Agent</th>
+								<th class="text-left px-4 py-3 font-medium">Last Seen</th>
+								<th class="text-left px-4 py-3 font-medium"></th>
+							</tr>
+						</thead>
+						<tbody id="devices-body" class="divide-y divide-ink-800/60"></tbody>
+					</table>
+				</div>
+			</div>
+
+			<!-- ===== SESSIONS TAB ===== -->
+			<div id="panel-sessions" class="hidden space-y-6">
+				<h2 class="text-lg font-bold tracking-tight">Sessions</h2>
+				<div id="sessions-loading" class="text-sm text-ink-400">Loading sessions...</div>
+				<div id="sessions-error" class="hidden text-sm text-red-400"></div>
+				<div id="sessions-table-wrap" class="hidden bg-ink-900 border border-ink-800 rounded-2xl overflow-hidden">
+					<table class="w-full text-sm">
+						<thead>
+							<tr class="border-b border-ink-800 text-xs text-ink-400 uppercase tracking-wider">
+								<th class="text-left px-5 py-3 font-medium">ID</th>
+								<th class="text-left px-4 py-3 font-medium">Status</th>
+								<th class="text-left px-4 py-3 font-medium">Requester</th>
+								<th class="text-left px-4 py-3 font-medium">Target</th>
+								<th class="text-left px-4 py-3 font-medium">Action</th>
+								<th class="text-left px-4 py-3 font-medium">Created</th>
+								<th class="text-left px-4 py-3 font-medium">Expires</th>
+							</tr>
+						</thead>
+						<tbody id="sessions-body" class="divide-y divide-ink-800/60"></tbody>
+					</table>
+				</div>
+			</div>
+
+			<!-- ===== SYSTEM TAB ===== -->
+			<div id="panel-system" class="hidden space-y-6">
+				<h2 class="text-lg font-bold tracking-tight">System</h2>
+
+				<!-- JWT Claims -->
+				<div class="bg-ink-900 border border-ink-800 rounded-2xl overflow-hidden">
+					<div class="px-5 py-3.5 border-b border-ink-800">
+						<span class="text-sm font-semibold">JWT Claims</span>
+					</div>
+					<div class="p-5">
+						<pre id="jwt-claims" class="font-mono text-xs text-ink-300 bg-ink-950 rounded-xl p-4 overflow-auto max-h-64"></pre>
+					</div>
+				</div>
+
+				<!-- Health -->
+				<div class="grid md:grid-cols-2 gap-4">
+					<div class="bg-ink-900 border border-ink-800 rounded-2xl overflow-hidden">
+						<div class="px-5 py-3.5 border-b border-ink-800">
+							<span class="text-sm font-semibold">Health Check</span>
+						</div>
+						<div class="divide-y divide-ink-800/60">
+							<div class="px-5 py-3 flex items-center justify-between text-sm">
+								<span class="text-ink-300">/healthz</span>
+								<span id="health-healthz" class="flex items-center gap-1.5 text-xs text-ink-400">
+									<span class="status-dot bg-ink-500"></span>checking...
+								</span>
+							</div>
+							<div class="px-5 py-3 flex items-center justify-between text-sm">
+								<span class="text-ink-300">/readyz</span>
+								<span id="health-readyz" class="flex items-center gap-1.5 text-xs text-ink-400">
+									<span class="status-dot bg-ink-500"></span>checking...
+								</span>
+							</div>
+						</div>
+					</div>
+
+					<div class="bg-ink-900 border border-ink-800 rounded-2xl overflow-hidden">
+						<div class="px-5 py-3.5 border-b border-ink-800">
+							<span class="text-sm font-semibold">Overlay Network</span>
+						</div>
+						<div class="divide-y divide-ink-800/60">
+							<div class="px-5 py-3 flex items-center justify-between text-sm">
+								<span class="text-ink-300">CIDR</span>
+								<span id="overlay-cidr" class="font-mono text-xs text-ink-300">--</span>
+							</div>
+							<div class="px-5 py-3 flex items-center justify-between text-sm">
+								<span class="text-ink-300">Token Issuer</span>
+								<span id="token-issuer" class="font-mono text-xs text-ink-300">--</span>
+							</div>
+							<div class="px-5 py-3 flex items-center justify-between text-sm">
+								<span class="text-ink-300">Token Expires</span>
+								<span id="token-exp" class="font-mono text-xs text-ink-300">--</span>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+		</div>
+	</main>
+
+	<!-- Add Device Modal -->
+	<div id="modal-add-device" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+		<div class="bg-ink-900 border border-ink-800 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
+			<div class="flex items-center justify-between">
+				<h3 class="text-base font-bold">Add Device</h3>
+				<button onclick="closeAddDevice()" class="text-ink-400 hover:text-ink-200 transition">
+					<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z"/></svg>
+				</button>
+			</div>
+
+			<!-- Step 1: Form -->
+			<div id="add-step-form" class="space-y-4">
+				<div>
+					<label class="block text-xs font-medium text-ink-300 mb-1">WireGuard Public Key</label>
+					<input id="add-wg-key" type="text" placeholder="Base64-encoded public key" class="w-full bg-ink-950 border border-ink-700 rounded-lg px-3 py-2 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-accent-500" />
+				</div>
+				<div>
+					<label class="block text-xs font-medium text-ink-300 mb-1">Hostname</label>
+					<input id="add-hostname" type="text" placeholder="e.g. macbook-pro" class="w-full bg-ink-950 border border-ink-700 rounded-lg px-3 py-2 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-accent-500" />
+				</div>
+				<div class="grid grid-cols-2 gap-3">
+					<div>
+						<label class="block text-xs font-medium text-ink-300 mb-1">OS Platform</label>
+						<input id="add-os-platform" type="text" placeholder="darwin" class="w-full bg-ink-950 border border-ink-700 rounded-lg px-3 py-2 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-accent-500" />
+					</div>
+					<div>
+						<label class="block text-xs font-medium text-ink-300 mb-1">OS Arch</label>
+						<input id="add-os-arch" type="text" placeholder="arm64" class="w-full bg-ink-950 border border-ink-700 rounded-lg px-3 py-2 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-accent-500" />
+					</div>
+				</div>
+				<div>
+					<label class="block text-xs font-medium text-ink-300 mb-1">Agent Version</label>
+					<input id="add-agent-version" type="text" placeholder="0.1.0" class="w-full bg-ink-950 border border-ink-700 rounded-lg px-3 py-2 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-accent-500" />
+				</div>
+				<div id="add-error" class="hidden text-sm text-red-400"></div>
+				<button onclick="submitAddDevice()" id="add-submit-btn" class="w-full bg-accent-500 hover:bg-accent-400 text-ink-950 font-semibold rounded-xl px-4 py-2.5 text-sm transition shadow-lg shadow-accent-500/20">
+					Start Pairing
+				</button>
+			</div>
+
+			<!-- Step 2: Pair code display + polling -->
+			<div id="add-step-code" class="hidden text-center space-y-4">
+				<p class="text-sm text-ink-300">Enter this code on the device to complete pairing:</p>
+				<div id="pair-code-display" class="text-4xl font-mono font-bold tracking-[0.3em] text-accent-400"></div>
+				<div id="pair-poll-status" class="text-sm text-ink-400">Waiting for device to claim...</div>
+				<button onclick="closeAddDevice()" class="text-sm text-ink-400 hover:text-ink-200 transition">Cancel</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- Footer -->
+	<footer class="shrink-0 border-t border-ink-800 px-6 py-3 flex items-center justify-center">
+		<p class="text-xs text-ink-500">&copy; 2026 <a href="https://unlikeotherai.com" class="text-ink-300 hover:text-white transition">UnlikeOtherAI Ltd</a></p>
+	</footer>
+
+<script>
+// -- DOM helpers --------------------------------------------------------------
+function el(tag, className, textContent) {
+	var e = document.createElement(tag);
+	if (className) e.className = className;
+	if (textContent !== undefined) e.textContent = textContent;
+	return e;
+}
+
+function td(className, textContent) { return el('td', className, textContent); }
+
+// -- Auth / JWT ---------------------------------------------------------------
+var TOKEN_KEY = 'silkie_jwt';
+
+function getToken() {
+	return localStorage.getItem(TOKEN_KEY);
+}
+
+function setToken(t) {
+	localStorage.setItem(TOKEN_KEY, t);
+}
+
+function logout() {
+	localStorage.removeItem(TOKEN_KEY);
+	window.location.href = '/login';
+}
+
+function parseJWT(token) {
+	try {
+		var parts = token.split('.');
+		if (parts.length !== 3) return null;
+		var payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+		return payload;
+	} catch (e) { return null; }
+}
+
+function checkAuth() {
+	// Check for token in URL fragment (from OAuth callback redirect)
+	var hash = window.location.hash;
+	if (hash.indexOf('#token=') === 0) {
+		var token = hash.substring(7);
+		if (token) {
+			setToken(token);
+			history.replaceState(null, '', window.location.pathname);
+		}
+	}
+
+	var storedToken = getToken();
+	if (!storedToken) {
+		window.location.href = '/login';
+		return false;
+	}
+
+	var claims = parseJWT(storedToken);
+	if (!claims) {
+		logout();
+		return false;
+	}
+
+	if (claims.exp && claims.exp * 1000 < Date.now()) {
+		logout();
+		return false;
+	}
+
+	return true;
+}
+
+// -- API helpers --------------------------------------------------------------
+function apiFetch(path, options) {
+	options = options || {};
+	var token = getToken();
+	var headers = Object.assign({}, options.headers || {});
+	if (token) {
+		headers['Authorization'] = 'Bearer ' + token;
+	}
+	if (options.body && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+		headers['Content-Type'] = 'application/json';
+		options.body = JSON.stringify(options.body);
+	}
+
+	return fetch(path, Object.assign({}, options, { headers: headers })).then(function(resp) {
+		if (resp.status === 401) {
+			logout();
+			throw new Error('Unauthorized');
+		}
+		return resp;
+	});
+}
+
+// -- Tab switching ------------------------------------------------------------
+var TABS = ['devices', 'sessions', 'system'];
+
+function switchTab(name) {
+	TABS.forEach(function(t) {
+		document.getElementById('panel-' + t).classList.toggle('hidden', t !== name);
+		var tab = document.getElementById('tab-' + t);
+		tab.className = t === name
+			? 'tab-active text-sm font-medium px-4 py-4 border-b-2 transition'
+			: 'tab-inactive text-sm font-medium px-4 py-4 border-b-2 transition';
+	});
+
+	if (name === 'devices') loadDevices();
+	if (name === 'sessions') loadSessions();
+	if (name === 'system') loadSystem();
+}
+
+// -- Utilities ----------------------------------------------------------------
+function shortId(id) {
+	if (!id) return '--';
+	return id.length > 12 ? id.substring(0, 8) + '...' : id;
+}
+
+function fmtTime(ts) {
+	if (!ts) return '--';
+	try {
+		return new Date(ts).toLocaleString();
+	} catch (e) { return ts; }
+}
+
+function timeAgo(ts) {
+	if (!ts) return '--';
+	try {
+		var diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+		if (diff < 60) return 'just now';
+		if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+		if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+		return Math.floor(diff / 86400) + 'd ago';
+	} catch (e) { return ts; }
+}
+
+function statusDotColor(status) {
+	if (status === 'active') return 'bg-accent-500';
+	if (status === 'pending') return 'bg-amber-400';
+	if (status === 'revoked') return 'bg-red-500';
+	return 'bg-ink-500';
+}
+
+function statusTextColor(status) {
+	if (status === 'established') return 'text-accent-400';
+	if (status === 'pending') return 'text-amber-400';
+	return 'text-ink-400';
+}
+
+// -- Devices ------------------------------------------------------------------
+function loadDevices() {
+	var loading = document.getElementById('devices-loading');
+	var error = document.getElementById('devices-error');
+	var wrap = document.getElementById('devices-table-wrap');
+	var body = document.getElementById('devices-body');
+
+	loading.classList.remove('hidden');
+	error.classList.add('hidden');
+	wrap.classList.add('hidden');
+
+	apiFetch('/v1/devices').then(function(resp) {
+		if (!resp.ok) throw new Error('Failed to load devices: ' + resp.status);
+		return resp.json();
+	}).then(function(data) {
+		var devices = Array.isArray(data) ? data : (data.devices || []);
+
+		body.replaceChildren();
+		if (devices.length === 0) {
+			var emptyRow = el('tr');
+			var emptyTd = td('px-5 py-10 text-center text-sm text-ink-500', 'No devices enrolled yet');
+			emptyTd.colSpan = 7;
+			emptyRow.appendChild(emptyTd);
+			body.appendChild(emptyRow);
+		} else {
+			devices.forEach(function(d) {
+				var isDim = (d.status === 'offline' || d.status === 'revoked');
+				var textCls = isDim ? 'text-ink-400' : 'text-ink-100';
+				var lastSeen = d.last_seen_at ? timeAgo(d.last_seen_at) : '--';
+
+				var row = el('tr', 'hover:bg-ink-800/40 transition');
+
+				// Hostname
+				row.appendChild(td('px-5 py-3 font-medium ' + textCls, d.hostname || d.name || '--'));
+
+				// Status with dot
+				var statusTd = td('px-4 py-3');
+				var statusSpan = el('span', 'flex items-center gap-1.5 text-xs font-medium');
+				var dot = el('span', 'status-dot ' + statusDotColor(d.status));
+				statusSpan.appendChild(dot);
+				statusSpan.appendChild(document.createTextNode(d.status || 'unknown'));
+				statusTd.appendChild(statusSpan);
+				row.appendChild(statusTd);
+
+				// Overlay IP
+				row.appendChild(td('px-4 py-3 font-mono text-xs text-ink-300', d.overlay_ip || '--'));
+
+				// Platform
+				row.appendChild(td('px-4 py-3 text-xs text-ink-300', d.os_platform || '--'));
+
+				// Agent version
+				row.appendChild(td('px-4 py-3 text-xs text-ink-300 font-mono', d.agent_version || '--'));
+
+				// Last seen
+				row.appendChild(td('px-4 py-3 text-xs text-ink-400', lastSeen));
+
+				// Actions
+				var actionsTd = td('px-4 py-3 text-right');
+				var revokeBtn = el('button', 'text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded hover:bg-ink-700 transition', 'Revoke');
+				revokeBtn.addEventListener('click', (function(deviceId) {
+					return function() { revokeDevice(deviceId); };
+				})(d.id));
+				actionsTd.appendChild(revokeBtn);
+				row.appendChild(actionsTd);
+
+				body.appendChild(row);
+			});
+		}
+
+		loading.classList.add('hidden');
+		wrap.classList.remove('hidden');
+	}).catch(function(e) {
+		loading.classList.add('hidden');
+		error.textContent = e.message;
+		error.classList.remove('hidden');
+	});
+}
+
+function revokeDevice(id) {
+	if (!confirm('Revoke this device? It will need to re-enroll.')) return;
+	apiFetch('/v1/devices/' + id, { method: 'DELETE' }).then(function(resp) {
+		if (!resp.ok) throw new Error('Failed to revoke device: ' + resp.status);
+		loadDevices();
+	}).catch(function(e) {
+		alert('Error: ' + e.message);
+	});
+}
+
+// -- Add Device (pair/start) --------------------------------------------------
+var pairPollInterval = null;
+
+function openAddDevice() {
+	document.getElementById('modal-add-device').classList.remove('hidden');
+	document.getElementById('add-step-form').classList.remove('hidden');
+	document.getElementById('add-step-code').classList.add('hidden');
+	document.getElementById('add-error').classList.add('hidden');
+}
+
+function closeAddDevice() {
+	document.getElementById('modal-add-device').classList.add('hidden');
+	if (pairPollInterval) {
+		clearInterval(pairPollInterval);
+		pairPollInterval = null;
+	}
+}
+
+function submitAddDevice() {
+	var btn = document.getElementById('add-submit-btn');
+	var errEl = document.getElementById('add-error');
+	errEl.classList.add('hidden');
+
+	var payload = {
+		wg_public_key: document.getElementById('add-wg-key').value.trim(),
+		hostname: document.getElementById('add-hostname').value.trim(),
+		os_platform: document.getElementById('add-os-platform').value.trim(),
+		os_arch: document.getElementById('add-os-arch').value.trim(),
+		agent_version: document.getElementById('add-agent-version').value.trim(),
+	};
+
+	if (!payload.wg_public_key || !payload.hostname) {
+		errEl.textContent = 'WireGuard public key and hostname are required.';
+		errEl.classList.remove('hidden');
+		return;
+	}
+
+	btn.disabled = true;
+	btn.textContent = 'Starting...';
+
+	apiFetch('/v1/auth/pair/start', { method: 'POST', body: payload }).then(function(resp) {
+		if (!resp.ok) {
+			return resp.text().then(function(text) {
+				throw new Error(text || 'pair/start failed: ' + resp.status);
+			});
+		}
+		return resp.json();
+	}).then(function(data) {
+		var code = data.pair_code || data.code || '';
+
+		// Show code step
+		document.getElementById('add-step-form').classList.add('hidden');
+		document.getElementById('add-step-code').classList.remove('hidden');
+		document.getElementById('pair-code-display').textContent = code.toUpperCase();
+		document.getElementById('pair-poll-status').textContent = 'Waiting for device to claim...';
+		document.getElementById('pair-poll-status').className = 'text-sm text-ink-400';
+
+		// Poll pair/status every 2s
+		var deviceId = data.device_id || data.id || '';
+		if (deviceId) {
+			pairPollInterval = setInterval(function() {
+				apiFetch('/v1/auth/pair/status?device_id=' + encodeURIComponent(deviceId)).then(function(statusResp) {
+					if (statusResp.ok) {
+						return statusResp.json().then(function(statusData) {
+							if (statusData.status === 'claimed' || statusData.status === 'active') {
+								clearInterval(pairPollInterval);
+								pairPollInterval = null;
+								document.getElementById('pair-poll-status').textContent = 'Device paired successfully!';
+								document.getElementById('pair-poll-status').className = 'text-sm text-accent-400';
+								setTimeout(function() { closeAddDevice(); loadDevices(); }, 1500);
+							}
+						});
+					}
+				}).catch(function() { /* ignore poll errors */ });
+			}, 2000);
+		}
+	}).catch(function(e) {
+		errEl.textContent = e.message;
+		errEl.classList.remove('hidden');
+	}).finally(function() {
+		btn.disabled = false;
+		btn.textContent = 'Start Pairing';
+	});
+}
+
+// -- Sessions -----------------------------------------------------------------
+function loadSessions() {
+	var loading = document.getElementById('sessions-loading');
+	var error = document.getElementById('sessions-error');
+	var wrap = document.getElementById('sessions-table-wrap');
+	var body = document.getElementById('sessions-body');
+
+	loading.classList.remove('hidden');
+	error.classList.add('hidden');
+	wrap.classList.add('hidden');
+
+	apiFetch('/v1/sessions').then(function(resp) {
+		if (!resp.ok) throw new Error('Failed to load sessions: ' + resp.status);
+		return resp.json();
+	}).then(function(data) {
+		var sessions = Array.isArray(data) ? data : (data.sessions || []);
+
+		body.replaceChildren();
+		if (sessions.length === 0) {
+			var emptyRow = el('tr');
+			var emptyTd = td('px-5 py-10 text-center text-sm text-ink-500', 'No sessions');
+			emptyTd.colSpan = 7;
+			emptyRow.appendChild(emptyTd);
+			body.appendChild(emptyRow);
+		} else {
+			sessions.forEach(function(s) {
+				var row = el('tr', 'hover:bg-ink-800/40 transition');
+
+				row.appendChild(td('px-5 py-3 font-mono text-xs text-ink-300', shortId(s.id)));
+
+				var statusTd = td('px-4 py-3');
+				statusTd.appendChild(el('span', 'text-xs font-medium ' + statusTextColor(s.status), s.status || '--'));
+				row.appendChild(statusTd);
+
+				row.appendChild(td('px-4 py-3 font-mono text-xs text-ink-300', shortId(s.requester_device_id)));
+				row.appendChild(td('px-4 py-3 font-mono text-xs text-ink-300', shortId(s.target_device_id)));
+				row.appendChild(td('px-4 py-3 text-xs text-ink-300', s.requested_action || '--'));
+				row.appendChild(td('px-4 py-3 text-xs text-ink-400', fmtTime(s.created_at)));
+				row.appendChild(td('px-4 py-3 text-xs text-ink-400', fmtTime(s.expires_at)));
+
+				body.appendChild(row);
+			});
+		}
+
+		loading.classList.add('hidden');
+		wrap.classList.remove('hidden');
+	}).catch(function(e) {
+		loading.classList.add('hidden');
+		error.textContent = e.message;
+		error.classList.remove('hidden');
+	});
+}
+
+// -- System -------------------------------------------------------------------
+function loadSystem() {
+	var token = getToken();
+	var claims = token ? parseJWT(token) : null;
+
+	// JWT Claims
+	document.getElementById('jwt-claims').textContent = claims
+		? JSON.stringify(claims, null, 2)
+		: 'No token';
+
+	// Fill overlay/token info from claims
+	if (claims) {
+		document.getElementById('token-issuer').textContent = claims.iss || '--';
+		document.getElementById('token-exp').textContent = claims.exp
+			? new Date(claims.exp * 1000).toLocaleString()
+			: '--';
+	}
+
+	// Health checks
+	checkEndpoint('/healthz', 'health-healthz');
+	checkEndpoint('/readyz', 'health-readyz');
+}
+
+function checkEndpoint(path, elementId) {
+	var container = document.getElementById(elementId);
+	fetch(path).then(function(resp) {
+		container.replaceChildren();
+		var dot = el('span', 'status-dot ' + (resp.ok ? 'bg-accent-500' : 'bg-red-500'));
+		var label = el('span', resp.ok ? 'text-accent-400' : 'text-red-400', resp.ok ? 'ok' : 'error ' + resp.status);
+		container.appendChild(dot);
+		container.appendChild(label);
+	}).catch(function() {
+		container.replaceChildren();
+		var dot = el('span', 'status-dot bg-red-500');
+		var label = el('span', 'text-red-400', 'unreachable');
+		container.appendChild(dot);
+		container.appendChild(label);
+	});
+}
+
+// -- Init ---------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', function() {
+	if (!checkAuth()) return;
+
+	var claims = parseJWT(getToken());
+	if (claims) {
+		var emailEl = document.getElementById('user-email');
+		var email = claims.email || claims.sub || '';
+		emailEl.textContent = claims.is_super ? email + ' (super)' : email;
+	}
+
+	loadDevices();
+});
+</script>
+
+</body>
+</html>

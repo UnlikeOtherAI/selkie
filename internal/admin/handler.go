@@ -26,11 +26,11 @@ func (h *Handler) Mount(r chi.Router) {
 }
 
 func (*Handler) serveAdmin(w http.ResponseWriter, _ *http.Request) {
-	serveHTMLFile(w, "docs/template/admin.html")
+	serveHTMLFile(w, "admin/index.html")
 }
 
 func (*Handler) serveLogin(w http.ResponseWriter, _ *http.Request) {
-	serveHTMLFile(w, "docs/template/login.html")
+	serveHTMLFile(w, "admin/login.html")
 }
 
 func serveHTMLFile(w http.ResponseWriter, path string) {
