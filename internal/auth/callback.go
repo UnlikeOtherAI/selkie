@@ -7,25 +7,35 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"go.uber.org/zap"
 
+	"github.com/unlikeotherai/silkie/internal/audit"
 	"github.com/unlikeotherai/silkie/internal/config"
 	"github.com/unlikeotherai/silkie/internal/store"
 )
 
 // CallbackHandler handles the OAuth callback from UOA, upserting the user and issuing a session JWT.
 type CallbackHandler struct {
-	db  *store.DB
-	cfg config.Config
+	db     *store.DB
+	cfg    config.Config
+	audit  *audit.Logger
+	logger *zap.Logger
 }
 
-// NewCallbackHandler creates a CallbackHandler with the given database and config.
-func NewCallbackHandler(db *store.DB, cfg config.Config) *CallbackHandler {
-	return &CallbackHandler{db: db, cfg: cfg}
+// NewCallbackHandler creates a CallbackHandler with the given database, config, and audit logger.
+func NewCallbackHandler(db *store.DB, cfg config.Config, auditor *audit.Logger, logger *zap.Logger) *CallbackHandler {
+	return &CallbackHandler{db: db, cfg: cfg, audit: auditor, logger: logger}
 }
 
-// Mount registers the callback route on the given router.
+// Mount registers the auth routes on the given router.
 func (h *CallbackHandler) Mount(r chi.Router) {
+	r.Get("/auth/login", h.ServeLogin)
 	r.Get("/auth/callback", h.ServeCallback)
+}
+
+// ServeLogin redirects the user to the UOA authorization URL.
+func (*CallbackHandler) ServeLogin(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, BuildAuthURL(), http.StatusFound)
 }
 
 // ServeCallback processes the OAuth callback, exchanges the code, upserts the user, and redirects with a JWT.
@@ -46,6 +56,20 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	if h.audit != nil {
+		if auditErr := h.audit.Log(r.Context(), audit.Event{
+			ActorUserID: &userID,
+			Action:      "user.login",
+			Outcome:     "success",
+			TargetTable: "users",
+			TargetID:    &userID,
+			RemoteIP:    audit.RemoteAddr(r),
+			UserAgent:   r.UserAgent(),
+		}); auditErr != nil {
+			h.logger.Error("audit user.login", zap.Error(auditErr))
+		}
 	}
 
 	token, err := h.mintToken(userID, isSuper)

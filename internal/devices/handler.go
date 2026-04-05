@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/unlikeotherai/silkie/internal/audit"
 	"github.com/unlikeotherai/silkie/internal/auth"
 	"github.com/unlikeotherai/silkie/internal/config"
 	"github.com/unlikeotherai/silkie/internal/overlay"
@@ -26,15 +27,16 @@ type Handler struct {
 	logger  *zap.Logger
 	cfg     config.Config
 	overlay *overlay.Allocator
+	audit   *audit.Logger
 }
 
 // New creates a devices Handler with the given dependencies.
-func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator, auditor *audit.Logger) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc}
+	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor}
 }
 
 // Mount registers device routes on the given router behind auth middleware.
@@ -302,6 +304,20 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	if commandTag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "device not found")
 		return
+	}
+
+	if h.audit != nil {
+		if auditErr := h.audit.Log(r.Context(), audit.Event{
+			ActorUserID: &claims.Sub,
+			Action:      "device.revoke",
+			Outcome:     "success",
+			TargetTable: "devices",
+			TargetID:    &deviceID,
+			RemoteIP:    audit.RemoteAddr(r),
+			UserAgent:   r.UserAgent(),
+		}); auditErr != nil {
+			h.logger.Error("audit device.revoke", zap.Error(auditErr))
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)

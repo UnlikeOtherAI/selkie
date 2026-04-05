@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/unlikeotherai/silkie/internal/audit"
 	"github.com/unlikeotherai/silkie/internal/auth"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type pairClaimRequest struct {
@@ -109,6 +111,12 @@ WHERE code_hash = sha256($1::bytea)
 	}
 	credential := base64.URLEncoding.EncodeToString(credBytes)
 
+	credHash, hashErr := bcrypt.GenerateFromPassword([]byte(credential), bcrypt.DefaultCost)
+	if hashErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to hash credential")
+		return
+	}
+
 	hostname := strings.TrimSpace(req.DeviceName)
 	if hostname == "" {
 		hostname = pc.RequestedHostname
@@ -133,7 +141,7 @@ INSERT INTO devices (
     disk_free_bytes
 ) VALUES ($1, $2, 'active', $3, $4, $5, $6, '', '', '', 1, 0, 0, 0)
 RETURNING id
-`, claims.Sub, hostname, credential, pc.RequestedAgentVersion, pc.RequestedOSPlatform, pc.RequestedOSArch).Scan(&deviceID)
+`, claims.Sub, hostname, string(credHash), pc.RequestedAgentVersion, pc.RequestedOSPlatform, pc.RequestedOSArch).Scan(&deviceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create device")
 		return
@@ -174,6 +182,20 @@ WHERE id = $3
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit claim")
 		return
+	}
+
+	if h.audit != nil {
+		if auditErr := h.audit.Log(ctx, audit.Event{
+			ActorUserID: &claims.Sub,
+			Action:      "device.create",
+			Outcome:     "success",
+			TargetTable: "devices",
+			TargetID:    &deviceID,
+			RemoteIP:    audit.RemoteAddr(r),
+			UserAgent:   r.UserAgent(),
+		}); auditErr != nil {
+			h.logger.Error("audit device.create", zap.Error(auditErr))
+		}
 	}
 
 	writeJSON(w, http.StatusOK, pairClaimResponse{
