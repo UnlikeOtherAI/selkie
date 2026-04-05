@@ -1,13 +1,13 @@
-.PHONY: all build test lint lint-fix fmt vet tidy check ci web-lint clean
+.PHONY: all build test lint lint-fix fmt vet tidy check ci web-lint clean setup-hooks
 
 GO                := go
 GOLANGCI_LINT     := golangci-lint
-GOLANGCI_VERSION  := v1.61.0
+GOLANGCI_VERSION  := v2.1.6
 
 all: check
 
-## build: compile all Go packages
-build:
+## build: lint then compile — a successful build requires clean lints
+build: lint vet
 	$(GO) build ./...
 
 ## test: run all Go tests with race detector
@@ -32,7 +32,7 @@ tidy:
 lint:
 	@if ! command -v $(GOLANGCI_LINT) >/dev/null 2>&1; then \
 		echo "golangci-lint not found, installing $(GOLANGCI_VERSION)..."; \
-		GOFLAGS= $(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_VERSION); \
+		GOFLAGS= $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION); \
 	fi
 	$(GOLANGCI_LINT) run ./...
 
@@ -49,11 +49,21 @@ web-lint:
 	npx --yes htmlhint@1.1.4 "web/**/*.html"
 	npx --yes prettier@3.3.3 --check "web/**/*.{html,css,js}"
 
-## check: run the full strict pipeline (build, vet, lint, test)
-check: build vet lint test
+## check: the full strict pipeline — lint + vet + build + test + web
+check: lint vet
+	$(GO) build ./...
+	$(GO) test -race -count=1 ./...
+	@$(MAKE) web-lint
 
 ## ci: the canonical CI entrypoint
-ci: tidy check web-lint
+ci: tidy check
+
+## setup-hooks: install git pre-commit hook that enforces lint
+setup-hooks:
+	@mkdir -p .git/hooks
+	@printf '#!/bin/sh\nset -e\nmake lint vet\ngo build ./...\n' > .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "pre-commit hook installed"
 
 ## clean: remove build artifacts
 clean:

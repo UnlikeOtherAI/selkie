@@ -14,8 +14,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  go:
-    name: go build / vet / lint / test
+  lint:
+    name: lint (gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.1.6
+          args: --timeout=5m
+
+  build-test:
+    name: build + test
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,17 +53,8 @@ jobs:
           go mod download
           go mod verify
 
-      - name: go vet
-        run: go vet ./...
-
       - name: go build
         run: go build ./...
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.61.0
-          args: --timeout=5m
 
       - name: go test
         run: go test -race -count=1 ./...

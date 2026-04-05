@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/icon-1024.png" width="130" height="130" alt="Silkie" style="border-radius: 22px;" />
+  <img src="assets/app-icon.png" width="130" height="130" alt="Silkie" style="border-radius: 22px;" />
   <h1>Silkie</h1>
   <p><strong>Self-hosted zero-trust access layer</strong></p>
   <p>
