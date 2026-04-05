@@ -2,111 +2,124 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/unlikeotherai/silkie/internal/config"
+	"github.com/unlikeotherai/silkie/internal/devices"
+	"github.com/unlikeotherai/silkie/internal/sessions"
 	"github.com/unlikeotherai/silkie/internal/store"
 )
 
 func main() {
 	cfg := config.Load()
+	logger := buildLogger(cfg.LogLevel)
+	defer logger.Sync() //nolint:errcheck
 
-	log, err := buildLogger(cfg.LogLevel)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
-		os.Exit(1)
+	ctx := context.Background()
+	if err := runServe(ctx, cfg, logger); err != nil {
+		logger.Fatal("server exited with error", zap.Error(err))
 	}
-	defer log.Sync()
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
 	db, err := store.NewDB(ctx, cfg)
 	if err != nil {
-		log.Fatal("failed to open database", zap.Error(err))
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
-	log.Info("migrations applied")
+	logger.Info("migrations applied")
 
 	rdb, err := store.NewRedis(ctx, cfg)
 	if err != nil {
-		log.Fatal("failed to open redis", zap.Error(err))
+		return fmt.Errorf("open redis: %w", err)
 	}
-	defer rdb.Close()
+	defer rdb.Close() //nolint:errcheck
+
+	ready := &atomic.Bool{}
+	ready.Store(true)
 
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok")) //nolint:errcheck
+	})
+	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
+		if !ready.Load() {
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		pCtx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.Ping(pCtx); err != nil {
+			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := rdb.Ping(pCtx); err != nil {
+			http.Error(w, "redis unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ready")) //nolint:errcheck
 	})
 
-	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
-		if err := db.Ping(req.Context()); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"status": "error", "detail": "db"}) //nolint:errcheck
-			return
-		}
-		if err := rdb.Ping(req.Context()); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"status": "error", "detail": "redis"})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
+	devices.New(db).Mount(r)
+	sessions.New(db).Mount(r)
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.ServerPort),
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 90 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              fmt.Sprintf(":%d", cfg.ServerPort),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
-
+	errCh := make(chan error, 1)
 	go func() {
-		log.Info("server listening", zap.Int("port", cfg.ServerPort))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("server error", zap.Error(err))
+		logger.Info("listening", zap.Int("port", cfg.ServerPort))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
+		close(errCh)
 	}()
 
-	<-stop
-	log.Info("shutting down")
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("graceful shutdown error", zap.Error(err))
+	select {
+	case err := <-errCh:
+		return err
+	case <-sigCtx.Done():
 	}
-	log.Info("shutdown complete")
+
+	ready.Store(false)
+	logger.Info("shutting down")
+
+	shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		return err
+	}
+	return <-errCh
 }
 
-func buildLogger(level string) (*zap.Logger, error) {
+func buildLogger(level string) *zap.Logger {
 	cfg := zap.NewProductionConfig()
-	switch level {
-	case "debug":
-		cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	case "warn":
-		cfg.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
-	case "error":
-		cfg.Level = zap.NewAtomicLevelAt(zap.ErrorLevel)
+	if parsed, err := zapcore.ParseLevel(level); err == nil {
+		cfg.Level = zap.NewAtomicLevelAt(parsed)
 	}
-	return cfg.Build()
+	l, err := cfg.Build()
+	if err != nil {
+		l, _ = zap.NewProduction()
+	}
+	return l
 }

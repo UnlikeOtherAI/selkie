@@ -147,43 +147,43 @@ CREATE INDEX idx_services_metadata_gin
     ON services USING gin (metadata);
 
 CREATE TABLE connect_sessions (
-    id                         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    requester_user_id          uuid NOT NULL
-                                REFERENCES users(id) ON DELETE RESTRICT,
-    requester_device_id        uuid
-                                REFERENCES devices(id) ON DELETE SET NULL,
-    target_device_id           uuid NOT NULL
-                                REFERENCES devices(id) ON DELETE RESTRICT,
-    target_service_id          uuid NOT NULL
-                                REFERENCES services(id) ON DELETE RESTRICT,
-    requested_action           text NOT NULL,
-    status                     text NOT NULL DEFAULT 'pending'
-                                CHECK (
-                                    status IN (
-                                        'pending',
-                                        'authorizing',
-                                        'candidate_exchange',
-                                        'established',
-                                        'closing',
-                                        'closed',
-                                        'denied',
-                                        'expired',
-                                        'failed'
-                                    )
-                                ),
-    requester_candidate_set    jsonb NOT NULL DEFAULT '[]'::jsonb
-                                CHECK (jsonb_typeof(requester_candidate_set) = 'array'),
-    target_candidate_set       jsonb NOT NULL DEFAULT '[]'::jsonb
-                                CHECK (jsonb_typeof(target_candidate_set) = 'array'),
-    selected_path              text
-                                CHECK (selected_path IN ('direct', 'relay')),
+    id                           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    requester_user_id            uuid NOT NULL
+                                  REFERENCES users(id) ON DELETE RESTRICT,
+    requester_device_id          uuid
+                                  REFERENCES devices(id) ON DELETE SET NULL,
+    target_device_id             uuid NOT NULL
+                                  REFERENCES devices(id) ON DELETE RESTRICT,
+    target_service_id            uuid NOT NULL
+                                  REFERENCES services(id) ON DELETE RESTRICT,
+    requested_action             text NOT NULL,
+    status                       text NOT NULL DEFAULT 'pending'
+                                  CHECK (
+                                      status IN (
+                                          'pending',
+                                          'authorizing',
+                                          'candidate_exchange',
+                                          'established',
+                                          'closing',
+                                          'closed',
+                                          'denied',
+                                          'expired',
+                                          'failed'
+                                      )
+                                  ),
+    requester_candidate_set      jsonb NOT NULL DEFAULT '[]'::jsonb
+                                  CHECK (jsonb_typeof(requester_candidate_set) = 'array'),
+    target_candidate_set         jsonb NOT NULL DEFAULT '[]'::jsonb
+                                  CHECK (jsonb_typeof(target_candidate_set) = 'array'),
+    selected_path                text
+                                  CHECK (selected_path IN ('direct', 'relay')),
     selected_relay_allocation_id uuid,
-    denial_reason              text,
-    expires_at                 timestamptz NOT NULL,
-    established_at             timestamptz,
-    closed_at                  timestamptz,
-    created_at                 timestamptz NOT NULL DEFAULT now(),
-    updated_at                 timestamptz NOT NULL DEFAULT now()
+    denial_reason                text,
+    expires_at                   timestamptz NOT NULL,
+    established_at               timestamptz,
+    closed_at                    timestamptz,
+    created_at                   timestamptz NOT NULL DEFAULT now(),
+    updated_at                   timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_connect_sessions_requester_status
