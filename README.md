@@ -1,17 +1,21 @@
-<div align="center">
-  <img src="assets/app-icon.png" width="130" height="130" alt="Selkie" style="border-radius: 22px;" />
-  <h1>Selkie</h1>
-  <p><strong>Self-hosted zero-trust access layer</strong></p>
-  <p>
-    <a href="LICENSE">Apache 2.0</a> &nbsp;·&nbsp;
-    <a href="https://www.wireguard.com/">Built on WireGuard</a> &nbsp;·&nbsp;
-    Author: <a href="https://github.com/rafiki270">Ondrej Rafaj</a>
-  </p>
-</div>
+<h1 align="center">Selkie</h1>
+
+<p align="center">
+  Self-hosted zero-trust access layer built on <a href="https://www.wireguard.com/">WireGuard</a>.<br>
+  Device enrollment, session brokering, STUN/TURN-assisted NAT traversal, and a clean admin UI.
+</p>
+
+<p align="center">
+  <a href="docs/brief.md">System Design</a> &middot;
+  <a href="docs/frameworks.md">Architecture</a> &middot;
+  <a href="docs/cli.md">CLI Reference</a> &middot;
+  <a href="docs/deployment.md">Deployment</a> &middot;
+  <a href="LICENSE">Apache 2.0</a>
+</p>
 
 ---
 
-Selkie is a self-hosted management and administration layer for a [WireGuard](https://www.wireguard.com/)-based zero-trust overlay network. It provides device enrollment, session brokering, STUN/TURN-assisted NAT traversal, and a clean admin UI — wrapping the underlying WireGuard peer-to-peer protocol, which is open source and maintained independently.
+Selkie is a self-hosted management and administration layer for a [WireGuard](https://www.wireguard.com/)-based zero-trust overlay network. It wraps the underlying WireGuard peer-to-peer protocol, which is open source and maintained independently.
 
 WireGuard is developed by Jason A. Donenfeld and released under the [GPLv2 license](https://www.wireguard.com/license/). Selkie links to WireGuard userspace implementations at runtime and does not distribute WireGuard source. See [wireguard.com](https://www.wireguard.com/) and the [WireGuard GitHub organisation](https://github.com/WireGuard) for the canonical project.
 
@@ -75,6 +79,12 @@ selkie enroll
 After enrollment, open the admin UI, complete SSO login — the first login becomes the super user account.
 
 ---
+
+## Sister projects
+
+### [Kelpie](https://github.com/UnlikeOtherAI/kelpie)
+
+LLM-first browser for iOS, Android, macOS, and desktop. Control real browsers via mDNS discovery, HTTP API, and MCP.
 
 ## License
 
