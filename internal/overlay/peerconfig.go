@@ -20,20 +20,21 @@ func GeneratePeerConfig(
 	serverPublicKey string,
 	serverEndpoint string,
 	serverWGPort int,
-	overlayCIDR string,
+	serverOverlayIP string,
 	devicePublicKey string,
 	deviceOverlayIP string,
 ) PeerConfig {
 	deviceSide := fmt.Sprintf(`[Peer]
 PublicKey = %s
 Endpoint = %s:%d
-AllowedIPs = %s
+AllowedIPs = %s/32
 PersistentKeepalive = 25
-`, serverPublicKey, serverEndpoint, serverWGPort, overlayCIDR)
+`, serverPublicKey, serverEndpoint, serverWGPort, serverOverlayIP)
 
 	serverSide := fmt.Sprintf(`[Peer]
 PublicKey = %s
 AllowedIPs = %s/32
+PersistentKeepalive = 25
 `, devicePublicKey, deviceOverlayIP)
 
 	return PeerConfig{

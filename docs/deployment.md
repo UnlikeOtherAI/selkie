@@ -1,404 +1,201 @@
 # Deployment
 
-This document defines the production deployment model for the Selkie control
-plane. The baseline runtime is Docker Compose with four core services:
-PostgreSQL, Redis, coturn, and the Go server. Caddy sits in front as the TLS
-terminator and reverse proxy.
+Selkie has two deployment shapes in this repository:
 
-## Topology
+- local development: [docker-compose.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/docker-compose.yml)
+- prototype production edge VM: [ops/docker-compose.edge.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/docker-compose.edge.yml)
+
+The approved prototype topology is intentionally cheap:
+
+- `selkie.live` stays on Cloud Run
+- `admin.selkie.live`, `api.selkie.live`, and `relay.selkie.live` terminate on one always-on Belgium VM
+- PostgreSQL stays on the shared UnlikeOtherAI instance
+- Redis, coturn, Caddy, and the Selkie server run on that VM
+
+## Prototype topology
 
 ```text
 Internet
   |
-  v
-Caddy :443/:80
+  +--> selkie.live ----------------------------> Cloud Run website
   |
-  +--> server :8080
+  +--> admin.selkie.live ----------------------> Caddy :443 on Belgium VM
   |
-  +--> static admin UI (proxied from server)
+  +--> api.selkie.live ------------------------> Caddy :443 on Belgium VM
+  |
+  +--> relay.selkie.live:51820/udp -----------> server-owned wg0 on Belgium VM
+  |
+  +--> relay.selkie.live:3478/udp,tcp --------> coturn on Belgium VM
+  |
+  +--> relay.selkie.live:5349/tcp ------------> coturn TLS on Belgium VM
 
-server --> PostgreSQL :5432
-server --> Redis :6379
-server --> coturn TURN REST auth + health checks
-clients --> coturn :3478/udp,tcp and :5349/tls (relay path)
+Belgium VM
+  |
+  +--> Caddy
+  +--> selkie-server
+  +--> Redis
+  +--> coturn
+  +--> WireGuard wg0
+
+selkie-server --> shared PostgreSQL
+selkie-server --> local Redis
+coturn --> local Redis statsdb
 ```
 
-## Docker Compose
+## Why the VM exists
 
-The minimum local or single-node production layout is:
+The website can scale to zero. The VPN path cannot.
 
-```yaml
-services:
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: selkie
-      POSTGRES_USER: selkie
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+The VM is required because the Selkie server must:
 
-  redis:
-    image: redis:7
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
+- own `wg0`
+- accept WireGuard on `51820/udp`
+- route traffic between device `/32` peers
+- rewrite peer endpoints from device heartbeats
+- keep coturn reachable on its public UDP and TCP ports
 
-  coturn:
-    image: coturn/coturn:4.6
-    restart: unless-stopped
-    network_mode: host
-    command:
-      - -n
-      - --use-auth-secret
-      - --static-auth-secret=${COTURN_SECRET}
-      - --realm=${COTURN_REALM:-selkie}
-      - --external-ip=${TURN_HOST}
-      - --listening-port=${TURN_PORT}
-      - --tls-listening-port=5349
-      # Allocation lifecycle tracking via Redis statsdb (pub/sub events).
-      - --redis-statsdb=ip=127.0.0.1 dbname=1 port=6379 connect_timeout=30
-      # Telnet CLI for forced session termination.
-      - --cli-ip=127.0.0.1
-      - --cli-port=5766
-      - --cli-password=${COTURN_CLI_PASSWORD}
-      # Prometheus metrics (optional, port 9641).
-      - --prometheus
-    env_file:
-      - .env
+Cloud Run is not a valid target for those responsibilities.
 
-  server:
-    image: ghcr.io/unlikeotherai/selkie-server:latest
-    restart: unless-stopped
-    depends_on:
-      - postgres
-      - redis
-      - coturn
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
-      SERVER_PORT: ${SERVER_PORT}
-      LOG_LEVEL: ${LOG_LEVEL}
-    command: ["/bin/sh", "-lc", "control-server migrate && exec control-server serve"]
+## Edge VM compose
 
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    depends_on:
-      - server
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+Use [ops/docker-compose.edge.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/docker-compose.edge.yml) on the Belgium VM.
 
-volumes:
-  postgres_data:
-  redis_data:
-  caddy_data:
-  caddy_config:
+Runtime shape:
+
+- `caddy` uses host networking and terminates TLS for `admin.` and `api.`
+- `server` uses host networking and `CAP_NET_ADMIN` so it can create and manage `wg0`
+- `coturn` uses host networking for direct UDP and TCP exposure
+- `redis` listens on the VM and is intended to be reusable by other internal projects later
+
+Important constraints:
+
+- PostgreSQL is external in this prototype. Do not start a second local Postgres on the VM.
+- Redis `6379` must never be exposed publicly. Limit it to internal VPC access only.
+- IP forwarding must be enabled on the host.
+- the VM is always on; this part cannot scale to zero.
+
+## Required host configuration
+
+The VM must be a Linux host in `europe-west1` with:
+
+- machine type `e2-small`
+- static public IP
+- WireGuard kernel support
+- Docker Engine and Compose plugin
+- IPv4 forwarding enabled
+
+Required host sysctls:
+
+```sh
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.src_valid_mark=1
 ```
 
-Notes:
+## DNS shape
 
-- `coturn` needs host networking or equivalent direct UDP/TCP exposure.
-- The server stays on a private container network; only Caddy and coturn are
-  internet-facing.
-- `control-server migrate && control-server serve` is required. If migration
-  fails, the container must exit non-zero and never start the HTTP server.
+Required public records:
 
-## TLS termination with Caddy
+- `selkie.live` -> Cloud Run website
+- `admin.selkie.live` -> Belgium VM static IP
+- `api.selkie.live` -> Belgium VM static IP
+- `relay.selkie.live` -> Belgium VM static IP
 
-Caddy is the only TLS endpoint. The Go server listens on plain HTTP on
-`SERVER_PORT` behind it.
+Recommended runtime values:
 
-```caddyfile
-selkie.example.com {
-  encode zstd gzip
-
-  header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
-    Referrer-Policy "no-referrer"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-  }
-
-  reverse_proxy server:${SERVER_PORT}
-}
+```dotenv
+ADMIN_HOST=admin.selkie.live
+API_HOST=api.selkie.live
+RELAY_HOST=relay.selkie.live
+TURN_HOST=relay.selkie.live
+WG_SERVER_ENDPOINT=relay.selkie.live
+WG_SERVER_PORT=51820
+WG_INTERFACE_NAME=wg0
+WG_OVERLAY_CIDR=10.100.0.0/16
 ```
 
-Operational rules:
+The server overlay address is derived from `WG_OVERLAY_CIDR`. For `10.100.0.0/16`, the server owns `10.100.0.1/16` and each device gets its own `/32`.
 
-- TLS certificates are managed by Caddy, not by the Go server.
-- The server must trust `X-Forwarded-For` and `X-Forwarded-Proto` only from
-  the Caddy container or private ingress network.
-- SSE responses must disable proxy buffering and keep idle timeouts long
-  enough for multi-hour event streams.
+## Firewall policy
 
-## Secret injection
+Internet-facing ports on the VM:
 
-Secrets are injected only through environment variables or container-runtime
-secret mounts that are converted to env at process start. Nothing secret is
-committed to the repo.
+- `80/tcp`
+- `443/tcp`
+- `3478/udp`
+- `3478/tcp`
+- `5349/tcp`
+- `51820/udp`
+
+Internal-only ports:
+
+- `6379/tcp` for Redis
+- `5766/tcp` for coturn CLI
+
+## Secrets
 
 Required secrets:
 
-| Variable | Purpose |
-|---|---|
-| `UOA_SHARED_SECRET` | UOA HS256 signing and verification secret |
-| `INTERNAL_SESSION_SECRET` | HS256 key for Selkie-issued internal JWTs |
-| `COTURN_SECRET` | TURN REST API HMAC secret shared with coturn |
-| `COTURN_CLI_PASSWORD` | Telnet CLI password for coturn session management |
-| `POSTGRES_PASSWORD` | Postgres password when Compose provisions the DB |
+- `UOA_SHARED_SECRET`
+- `INTERNAL_SESSION_SECRET`
+- `COTURN_SECRET`
+- `COTURN_CLI_PASSWORD`
+- `WG_PRIVATE_KEY`
+- `REDIS_PASSWORD`
+- shared PostgreSQL credentials inside `DATABASE_URL`
+
+Derived but non-secret runtime values:
+
+- `WG_SERVER_PUBLIC_KEY`
+- `WG_SERVER_ENDPOINT`
+- `TURN_HOST`
 
 Rules:
 
-- `INTERNAL_SESSION_SECRET` must be distinct from `UOA_SHARED_SECRET`.
-- `COTURN_SECRET` must be shared only between the server and coturn.
-- Secrets must never be logged, echoed in health endpoints, or exposed through
-  admin APIs.
+- `INTERNAL_SESSION_SECRET` must be distinct from `UOA_SHARED_SECRET`
+- `WG_PRIVATE_KEY` never leaves the VM runtime secret store
+- `WG_SERVER_PUBLIC_KEY` should be derived from `WG_PRIVATE_KEY`, not managed separately by hand
+- secrets must never be committed or logged
 
-## Migration on startup
+## Caddy requirements
 
-Startup order is strict:
+Caddy is the only TLS edge for `admin.` and `api.` on the VM.
 
-1. Wait for PostgreSQL readiness.
-2. Run `control-server migrate`.
-3. Acquire singleton worker locks.
-4. Start HTTP listeners.
-5. Begin background loops only after readiness probes succeed.
+Use [ops/Caddyfile](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/Caddyfile). It must:
 
-Constraints:
+- reverse proxy to the local server HTTP port
+- preserve long-lived SSE streams
+- disable response buffering for `GET /api/v1/devices/{id}/events`
 
-- Migrations are SQL-first and idempotent.
-- Migration failure is fatal for that instance.
-- Only one instance needs to apply a given migration, but every instance may
-  attempt startup migration because PostgreSQL transaction locking serializes
-  it safely.
+In this repo that is done with `flush_interval -1` on the SSE path.
 
-## Graceful shutdown
+## Runtime readiness
 
-On `SIGTERM` or container stop:
+Readiness rules for the prototype VM:
 
-1. Mark the instance unready immediately so Caddy stops sending new requests.
-2. Stop accepting new HTTP connections.
-3. Keep existing SSE streams open for a short drain window so connected CLIs
-   can reconnect cleanly.
-4. Flush final audit events and trace exporters.
-5. Release advisory locks and stop background workers.
-6. Exit before the orchestrator hard-kills the process.
+1. PostgreSQL must be reachable.
+2. Redis must be reachable when `REDIS_URL` is configured.
+3. the server must initialize `wg0` successfully when `WG_PRIVATE_KEY` is configured.
+4. Caddy should only start after the server health check passes.
 
-Recommended timings:
+## WireGuard hub rules
 
-| Phase | Budget |
-|---|---|
-| Readiness off + stop new requests | immediate |
-| SSE drain window | 15s |
-| Worker shutdown + telemetry flush | 15s |
-| Total termination grace period | 30s |
+The server owns the WireGuard hub in the MVP.
 
-## Horizontal scaling
+Operational rules:
 
-Selkie can run multiple stateless server instances, but only if all state that
-matters outside one process is externalized.
+- the server creates `wg0` on startup when `WG_PRIVATE_KEY` is present
+- the server assigns the first usable overlay address in `WG_OVERLAY_CIDR` to `wg0`
+- every device gets `AllowedIPs = <server_overlay_ip>/32`
+- every server-side peer gets `AllowedIPs = <device_overlay_ip>/32`
+- `PersistentKeepalive = 25` is set on both sides
+- peer endpoint changes come from device heartbeats and are reconciled onto the host interface
 
-Required shared components:
+## Cloud Run after cutover
 
-| Concern | Shared backend |
-|---|---|
-| durable state | PostgreSQL |
-| rate limits, locks, live fan-out | Redis |
-| TURN relay | coturn |
-| TLS ingress | Caddy or external load balancer |
+After `admin.` and `api.` are live on the VM:
 
-### SSE fan-out
+- keep the existing Cloud Run `selkie-server` service out of DNS
+- do not delete it during prototype rollout
+- leave `selkie.live` on Cloud Run
 
-The device event stream is `GET /v1/devices/{id}/events` and must work across
-multiple server instances. That means in-memory broadcast is insufficient.
-
-Required pattern:
-
-- The instance that creates an event publishes it to Redis:
-  `PUBLISH selkie:device:{id}:events <json-payload>`.
-- Every server instance subscribes to the device channels for locally attached
-  SSE clients.
-- The SSE handler writes the Redis event payload directly to the open stream.
-
-If this pub/sub layer is missing, only the instance that created the event can
-reach its own SSE clients, which breaks scaled deployments.
-
-## Leader election for singleton workers
-
-Some loops must run exactly once cluster-wide:
-
-- expired session reaper
-- overlay IP reclaim worker
-- audit hash chain maintenance
-- version announcement / release sync
-
-Use PostgreSQL advisory locks, not Redis locks, for these workers so lock
-ownership follows the database transaction and survives Redis restarts cleanly.
-
-Example:
-
-```sql
-SELECT pg_try_advisory_lock(8246351, 1);
-```
-
-Rules:
-
-- Each singleton worker gets its own fixed lock tuple.
-- If lock acquisition fails, the instance remains a normal API/SSE node and
-  does not run that worker.
-- Locks are released automatically on connection loss; workers must stop when
-  their DB session drops.
-
-## Blue/green deploy constraints
-
-Blue/green is supported with constraints:
-
-1. Database migrations must be backward-compatible first, destructive later.
-   Add columns and tables before new code depends on them; drop old columns
-   only after all old instances are gone.
-2. Redis pub/sub payloads for SSE must remain compatible across the blue and
-   green versions during overlap.
-3. coturn credentials must validate against the same `COTURN_SECRET` on both
-   stacks during cutover.
-4. Advisory-lock worker IDs must not change between the blue and green
-   versions, or both stacks may think they own the same singleton job.
-5. Existing SSE clients will reconnect during cutover. The reconnect path must
-   be safe and idempotent.
-
-Do not run blue/green if the release contains a breaking schema migration that
-the old binary cannot tolerate.
-
-## Coturn integration
-
-Coturn is the STUN/TURN relay. The control plane integrates with it through
-three distinct channels:
-
-### Credential issuance (TURN REST API)
-
-The server mints ephemeral HMAC-SHA1 credentials using `use-auth-secret` with
-`COTURN_SECRET`. The TURN username format is `expiry_timestamp:session_uuid`,
-embedding the connect-session ID for downstream correlation.
-
-**Gotcha:** credential TTL does not imply allocation TTL. After a credential
-expires, an already-established relay session continues flowing traffic until
-the client disconnects or the allocation is force-cancelled. Deleting a
-credential from the userdb does not terminate a live session.
-
-### Allocation tracking (redis-statsdb)
-
-When coturn is configured with `--redis-statsdb`, it publishes allocation
-lifecycle and traffic events via Redis pub/sub:
-
-| Pattern | Event |
-|---|---|
-| `turn/realm/*/user/*/allocation/*/status` | `new lifetime=...`, `refreshed lifetime=...`, `deleted` |
-| `turn/realm/*/user/*/allocation/*/traffic` | periodic `rcvp=..., rcvb=..., sentp=..., sentb=...` |
-| `turn/realm/*/user/*/allocation/*/total_traffic` | final byte totals on allocation delete |
-
-The server subscribes to these patterns (`internal/nat/statsdb.go`) and
-persists events to the `relay_allocations` table. Traffic counters map as:
-`rcvb` = bytes_up (client to relay), `sentb` = bytes_down (relay to client).
-
-**Operational requirement:** the Redis connection used by coturn for statsdb
-must not expire. Configure Redis with `timeout 0` and `tcp-keepalive 60`.
-
-**Reconnection:** if the subscriber misses pub/sub events during a restart,
-reconcile by scanning existing `turn/user/*/allocation/*/status` keys, which
-coturn also stores (not only publishes).
-
-### Forced termination (telnet CLI)
-
-For immediate allocation revocation (policy violation, session close), the
-control plane connects to coturn's telnet CLI:
-
-1. `ps <turn_username>` — list active sessions for the embedded session UUID.
-2. `cs <coturn_session_id>` — force-cancel each session.
-
-This is the **only** reliable kill path. Credential deletion alone does not
-terminate live sessions.
-
-Configuration: `COTURN_CLI_ADDR` (default `127.0.0.1:5766`),
-`COTURN_CLI_PASSWORD`.
-
-### Monitoring (Prometheus)
-
-Coturn's `--prometheus` flag exposes metrics on port 9641:
-
-- `turn_traffic_rcvb`, `turn_traffic_sentb` — aggregate traffic counters
-- `turn_total_traffic_*` — lifetime totals
-
-Do **not** enable `--prometheus-username-labels` with ephemeral TURN REST API
-usernames — coturn warns this causes memory leaks from unbounded label
-cardinality.
-
-See `docs/research/coturn-allocation-tracking.md` for the full research.
-
-## CLI auto-update strategy
-
-The CLI is installed from npm but updated under server policy control.
-
-Policy:
-
-- The server publishes the latest compatible CLI version and minimum required
-  CLI version in its version metadata endpoint.
-- The daemon checks on startup and once every 24 hours.
-- Patch and minor updates are downloaded in the background, then applied by the
-  platform service manager restart path.
-- No forced hot-reload: the current daemon keeps running until the next
-  restart or a user-triggered `selkie service restart`.
-
-Operationally:
-
-- macOS updater command: `npm install -g selkie@<version>`
-- Linux updater command: `npm install -g selkie@<version>`
-- Auto-update must be disabled if the package manager path is unknown or the
-  install was not global.
-
-## Version skew policy
-
-Selkie is not wire-compatible across arbitrary versions. The server defines the
-compatibility window.
-
-| Component pair | Supported skew |
-|---|---|
-| server N ↔ CLI N | fully supported |
-| server N ↔ CLI N-1 minor | supported |
-| server N ↔ CLI older than N-1 minor | unsupported; CLI must upgrade |
-| CLI newer than server by patch level | tolerated |
-| CLI newer than server by minor level | rejected for enrollment; existing sessions may continue until restart |
-
-Rules:
-
-- Enroll and key rotation require an explicitly supported version pair.
-- If the CLI is too old, the server returns a structured upgrade-required
-  response instead of partially serving the request.
-- If the server becomes unreachable during skew or upgrade mismatch, the CLI
-  keeps its last-known WireGuard config and retries control-plane calls later.
-
-## Health checks
-
-Recommended probes:
-
-| Path | Meaning |
-|---|---|
-| `GET /healthz` | process is alive |
-| `GET /readyz` | database, Redis, and singleton worker prerequisites are ready |
-| `GET /metrics` | Prometheus/OpenTelemetry scrape surface |
-
-`/readyz` must fail if:
-
-- PostgreSQL is unavailable
-- Redis is unavailable
-- startup migration has not finished
-- the server has not yet subscribed to Redis pub/sub
+This keeps rollback simple and avoids destructive GCP actions.

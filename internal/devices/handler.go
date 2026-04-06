@@ -2,6 +2,7 @@
 package devices
 
 import (
+	"context"
 	crand "crypto/rand"
 	"encoding/json"
 	"errors"
@@ -22,21 +23,28 @@ import (
 )
 
 // Handler serves device-related HTTP endpoints.
+type HubSyncer interface {
+	SyncAll(ctx context.Context) error
+	SyncDevice(ctx context.Context, deviceID string) error
+}
+
+// Handler serves device-related HTTP endpoints.
 type Handler struct {
 	db      *store.DB
 	logger  *zap.Logger
 	cfg     config.Config
 	overlay *overlay.Allocator
 	audit   *audit.Logger
+	hub     HubSyncer
 }
 
 // New creates a devices Handler with the given dependencies.
-func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator, auditor *audit.Logger) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator, auditor *audit.Logger, hub HubSyncer) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor}
+	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor, hub: hub}
 }
 
 // Mount registers device routes on the given router behind auth middleware.
@@ -271,6 +279,12 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.hub != nil {
+		if syncErr := h.hub.SyncDevice(r.Context(), deviceID); syncErr != nil {
+			h.logger.Error("sync wireguard peer after heartbeat", zap.Error(syncErr), zap.String("device_id", deviceID))
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -307,6 +321,12 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	if commandTag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "device not found")
 		return
+	}
+
+	if h.hub != nil {
+		if syncErr := h.hub.SyncAll(r.Context()); syncErr != nil {
+			h.logger.Error("sync wireguard peers after device revoke", zap.Error(syncErr), zap.String("device_id", deviceID))
+		}
 	}
 
 	if h.audit != nil {

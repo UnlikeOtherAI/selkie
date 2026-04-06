@@ -184,6 +184,12 @@ WHERE id = $3
 		return
 	}
 
+	if h.hub != nil {
+		if syncErr := h.hub.SyncDevice(ctx, deviceID); syncErr != nil {
+			h.logger.Error("sync wireguard peer after device claim", zap.Error(syncErr), zap.String("device_id", deviceID))
+		}
+	}
+
 	if h.audit != nil {
 		if auditErr := h.audit.Log(ctx, audit.Event{
 			ActorUserID: &claims.Sub,

@@ -1,4 +1,4 @@
-{$UOA_DOMAIN:localhost} {
+(selkie_edge) {
   encode zstd gzip
 
   header {
@@ -9,5 +9,20 @@
     X-Frame-Options "DENY"
   }
 
-  reverse_proxy server:{$SERVER_PORT:8080}
+  @device_events path_regexp device_events ^/api/v1/devices/[^/]+/events$
+  handle @device_events {
+    reverse_proxy 127.0.0.1:{$SERVER_PORT:8080} {
+      flush_interval -1
+    }
+  }
+
+  reverse_proxy 127.0.0.1:{$SERVER_PORT:8080}
+}
+
+{$ADMIN_HOST} {
+  import selkie_edge
+}
+
+{$API_HOST} {
+  import selkie_edge
 }

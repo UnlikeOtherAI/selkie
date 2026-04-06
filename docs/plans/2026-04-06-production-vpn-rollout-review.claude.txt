@@ -1,0 +1,34 @@
+The plan is structurally sound and well-aligned with the docs. Three gaps require resolution before execution, and the existing five review gates stand.
+
+---
+
+## Issues found
+
+### 1. Missing: server WireGuard private key env var name (risky assumption)
+The plan says "loading `WG_PRIVATE_KEY` or equivalent secret" but `.env.example` has no such variable — only `WG_SERVER_PUBLIC_KEY`. The variable name must be agreed on and added to `.env.example` before the code change can be written. "Or equivalent" is too vague for a secret injected at runtime.
+
+### 2. Missing: container capability model for `wgctrl-go` (risky gap)
+`docs/techstack.md` specifies a distroless `static-debian12` image. `wgctrl-go` manages `wg0` via kernel netlink, which requires `CAP_NET_ADMIN`. The distroless image does not grant this by default. The plan's Phase 3 ("deploy the Selkie server behind Caddy") does not address the Compose service needing:
+```yaml
+cap_add: [NET_ADMIN]
+```
+Without it, the WireGuard hub lifecycle code will fail at runtime even on a correctly configured VM. This needs to be in the Compose spec.
+
+### 3. Missing: `PersistentKeepalive = 25` in code changes
+`docs/frameworks.md` explicitly requires `PersistentKeepalive = 25` on every peer entry, both server-side and device-side. The "Code changes required" section lists `AllowedIPs` correction, live reconciliation, and readiness fixes — but does not call out `PersistentKeepalive` as a required field in server-side peer writes. It should be in the peer reconciliation spec.
+
+### 4. Minor: SSE proxy buffering not addressed
+`docs/deployment.md` states SSE responses must disable proxy buffering. The plan deploys Caddy but does not note that the Caddyfile needs `flush_interval -1` (or equivalent) on the reverse proxy block for the SSE path. Without it, long-lived event streams will stall behind Caddy's response buffer.
+
+### 5. Minor: Cloud Run `selkie-server` not addressed post-migration
+After DNS cutover, the existing Cloud Run `selkie-server` remains publicly reachable with no VPN config. The plan should either decommission it or note explicitly that it is left idle and why.
+
+---
+
+## Remaining review gates (original five, still all open)
+
+1. Move `api/admin` off Cloud Run to the VM — confirmed or modified scope?
+2. VM-local PostgreSQL (docs baseline) vs. approved deviation to `selkie-db` Cloud SQL?
+3. `relay.selkie.live` introduced as stable WireGuard/TURN hostname?
+4. All listed code mismatches fixed before infra cutover?
+5. VPN hub must be always-on Belgium VM — agreed?

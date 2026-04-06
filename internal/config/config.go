@@ -27,6 +27,7 @@ type Config struct {
 	CoturnCLIPassword        string
 	WGOverlayCIDR            string
 	WGInterfaceName          string
+	WGPrivateKey             string
 	WGServerPublicKey        string
 	WGServerEndpoint         string
 	WGServerPort             int
@@ -58,7 +59,8 @@ func Load() Config {
 		CoturnCLIAddr:            getenv("COTURN_CLI_ADDR", "127.0.0.1:5766"),
 		CoturnCLIPassword:        os.Getenv("COTURN_CLI_PASSWORD"),
 		WGOverlayCIDR:            os.Getenv("WG_OVERLAY_CIDR"),
-		WGInterfaceName:          os.Getenv("WG_INTERFACE_NAME"),
+		WGInterfaceName:          getenv("WG_INTERFACE_NAME", "wg0"),
+		WGPrivateKey:             os.Getenv("WG_PRIVATE_KEY"),
 		WGServerPublicKey:        os.Getenv("WG_SERVER_PUBLIC_KEY"),
 		WGServerEndpoint:         os.Getenv("WG_SERVER_ENDPOINT"),
 		WGServerPort:             getenvInt("WG_SERVER_PORT", 51820),

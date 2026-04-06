@@ -1,0 +1,85 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -lc
+      - exec redis-server --appendonly yes --bind 0.0.0.0 --protected-mode yes --requirepass "$${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - turnserver
+      - --use-auth-secret
+      - --static-auth-secret=${COTURN_SECRET}
+      - --realm=${COTURN_REALM:-selkie}
+      - --external-ip=${TURN_HOST}
+      - --listening-port=${TURN_PORT:-3478}
+      - --tls-listening-port=5349
+      - --fingerprint
+      - --no-loopback-peers
+      - --no-multicast-peers
+      - --cli-ip=127.0.0.1
+      - --cli-port=5766
+      - --cli-password=${COTURN_CLI_PASSWORD}
+      - --min-port=49152
+      - --max-port=49200
+      - --prometheus
+      - --redis-statsdb=ip=127.0.0.1 dbname=1 port=6379 password=${REDIS_PASSWORD} connect_timeout=30
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    stop_grace_period: 45s
+    command: ["serve"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${SERVER_PORT:-8080}/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      server:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:

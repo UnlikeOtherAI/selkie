@@ -25,13 +25,20 @@ func (h *Handler) handleGetPeerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.cfg.WGServerPublicKey == "" || h.cfg.WGServerEndpoint == "" {
+	if h.cfg.WGServerPublicKey == "" || h.cfg.WGServerEndpoint == "" || h.cfg.WGOverlayCIDR == "" {
 		writeError(w, http.StatusServiceUnavailable, "wireguard server not configured")
 		return
 	}
 
+	serverOverlayIP, err := overlay.ServerOverlayIP(h.cfg.WGOverlayCIDR)
+	if err != nil {
+		h.logger.Error("resolve server overlay ip", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to resolve wireguard server config")
+		return
+	}
+
 	var overlayIP, wgPublicKey string
-	err := h.db.Pool.QueryRow(
+	err = h.db.Pool.QueryRow(
 		r.Context(),
 		`SELECT host(d.overlay_ip), dk.wg_public_key
 		 FROM devices d
@@ -54,7 +61,7 @@ func (h *Handler) handleGetPeerConfig(w http.ResponseWriter, r *http.Request) {
 		h.cfg.WGServerPublicKey,
 		h.cfg.WGServerEndpoint,
 		h.cfg.WGServerPort,
-		h.cfg.WGOverlayCIDR,
+		serverOverlayIP,
 		wgPublicKey,
 		overlayIP,
 	)

@@ -1,0 +1,11 @@
+The plan is acceptable. It correctly identifies and proposes solutions for critical deviations where the current deployment contradicts established documentation. The primary risk identified is not in the plan itself, but in the existing implementation's failure to manage the WireGuard hub and peer configuration as specified in `docs/frameworks.md` and `docs/deployment.md`.
+
+The plan explicitly flags one potential but currently undocumented deviation for review:
+*   **Database:** Proposes using the documented VM-local PostgreSQL but offers Cloud SQL as an alternative requiring explicit approval, as it deviates from `docs/deployment.md`.
+
+The remaining review gates are:
+1.  Approval to move `api/admin` from Cloud Run to a VM to align with documentation.
+2.  Decision on using VM-local PostgreSQL (doc baseline) vs. Cloud SQL (deviation).
+3.  Agreement to introduce `relay.selkie.live` as the stable hostname for WireGuard and TURN services.
+4.  Agreement that the identified code mismatches (readiness, peer config, WG lifecycle) must be fixed before infrastructure changes.
+5.  Agreement that the VPN hub requires an always-on VM and cannot scale to zero.

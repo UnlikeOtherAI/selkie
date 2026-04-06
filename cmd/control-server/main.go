@@ -30,6 +30,7 @@ import (
 	"github.com/unlikeotherai/selkie/internal/sessions"
 	"github.com/unlikeotherai/selkie/internal/store"
 	"github.com/unlikeotherai/selkie/internal/telemetry"
+	"github.com/unlikeotherai/selkie/internal/wg"
 )
 
 func main() {
@@ -82,6 +83,18 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		if err != nil {
 			return fmt.Errorf("init overlay allocator: %w", err)
 		}
+	}
+
+	var hub *wg.Hub
+	hub, err = wg.NewHub(db, cfg, logger)
+	if err != nil {
+		return fmt.Errorf("init wireguard hub: %w", err)
+	}
+	if hub != nil {
+		if err := hub.Init(ctx, cfg.WGServerPort); err != nil {
+			return fmt.Errorf("init wireguard hub: %w", err)
+		}
+		logger.Info("wireguard hub initialized", zap.String("interface", cfg.WGInterfaceName))
 	}
 
 	// Policy engine (allow-all when OPA_ENDPOINT is empty).
@@ -137,7 +150,7 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 
 	auth.NewCallbackHandler(db, cfg, auditor, logger).Mount(r)
 	admin.New(db, logger, cfg).Mount(r)
-	devices.New(db, logger, cfg, overlayAlloc, auditor).Mount(r)
+	devices.New(db, logger, cfg, overlayAlloc, auditor, hub).Mount(r)
 	services.New(db, logger, cfg).Mount(r)
 	sessions.New(db, rdb, logger, cfg, policyEngine).Mount(r)
 

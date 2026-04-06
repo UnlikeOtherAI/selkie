@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/unlikeotherai/selkie/internal/overlay"
 )
 
 // --- chi v5: route registration, URL params, middleware ---
@@ -359,5 +362,60 @@ func TestCoturnCredential_TTLFormat(t *testing.T) {
 	username := fmt.Sprintf("%d:%s", expiresAt.Unix(), "session-1")
 	if username != fmt.Sprintf("%d:session-1", expectedExpiry.Unix()) {
 		t.Errorf("username format mismatch: %q", username)
+	}
+}
+
+func TestOverlay_ServerAddressDerivation(t *testing.T) {
+	serverIP, err := overlay.ServerOverlayIP("10.100.0.0/16")
+	if err != nil {
+		t.Fatalf("server overlay ip: %v", err)
+	}
+	if serverIP != "10.100.0.1" {
+		t.Fatalf("server overlay ip = %q, want %q", serverIP, "10.100.0.1")
+	}
+
+	ifaceAddr, err := overlay.ServerInterfaceAddress("10.100.0.0/16")
+	if err != nil {
+		t.Fatalf("server interface address: %v", err)
+	}
+	if ifaceAddr != "10.100.0.1/16" {
+		t.Fatalf("server interface address = %q, want %q", ifaceAddr, "10.100.0.1/16")
+	}
+}
+
+func TestOverlay_ServerAddressRejectsTooSmallSubnet(t *testing.T) {
+	_, err := overlay.ServerOverlayIP("10.100.0.0/31")
+	if err == nil {
+		t.Fatal("expected error for subnet with fewer than 2 host bits")
+	}
+}
+
+func TestOverlay_GeneratePeerConfigHubAndSpoke(t *testing.T) {
+	pc := overlay.GeneratePeerConfig(
+		"server-public",
+		"relay.selkie.live",
+		51820,
+		"10.100.0.1",
+		"device-public",
+		"10.100.0.7",
+	)
+
+	if pc.OverlayIP != "10.100.0.7" {
+		t.Fatalf("overlay ip = %q, want %q", pc.OverlayIP, "10.100.0.7")
+	}
+	if !strings.Contains(pc.DeviceSide, "AllowedIPs = 10.100.0.1/32") {
+		t.Fatalf("device-side config missing server /32: %q", pc.DeviceSide)
+	}
+	if strings.Contains(pc.DeviceSide, "AllowedIPs = 10.100.0.0/16") {
+		t.Fatalf("device-side config still contains overlay cidr: %q", pc.DeviceSide)
+	}
+	if !strings.Contains(pc.DeviceSide, "PersistentKeepalive = 25") {
+		t.Fatalf("device-side config missing keepalive: %q", pc.DeviceSide)
+	}
+	if !strings.Contains(pc.ServerSide, "AllowedIPs = 10.100.0.7/32") {
+		t.Fatalf("server-side config missing device /32: %q", pc.ServerSide)
+	}
+	if !strings.Contains(pc.ServerSide, "PersistentKeepalive = 25") {
+		t.Fatalf("server-side config missing keepalive: %q", pc.ServerSide)
 	}
 }
