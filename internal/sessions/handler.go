@@ -40,11 +40,11 @@ func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config) 
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
-		r.Post("/v1/sessions", h.handleCreateSession)
-		r.Post("/v1/sessions/{id}/candidates", h.handleSessionCandidates)
-		r.Post("/v1/sessions/{id}/relay", h.handleRelayCredentials)
-		r.Get("/v1/sessions", h.handleListSessions)
-		r.Get("/v1/devices/{id}/events", h.handleDeviceEvents)
+		r.Post("/api/v1/sessions", h.handleCreateSession)
+		r.Post("/api/v1/sessions/{id}/candidates", h.handleSessionCandidates)
+		r.Post("/api/v1/sessions/{id}/relay", h.handleRelayCredentials)
+		r.Get("/api/v1/sessions", h.handleListSessions)
+		r.Get("/api/v1/devices/{id}/events", h.handleDeviceEvents)
 	})
 }
 

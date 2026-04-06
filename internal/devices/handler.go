@@ -43,15 +43,15 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
-		r.Post("/v1/auth/pair/start", h.handlePairStart)
-		r.Get("/v1/auth/pair/status", h.handlePairStatus)
-		r.Post("/v1/auth/pair/claim", h.pairClaim)
-		r.Get("/v1/devices", h.handleListDevices)
-		r.Get("/v1/devices/{id}", h.handleGetDevice)
-		r.Post("/v1/devices/{id}/heartbeat", h.handleHeartbeat)
-		r.Post("/v1/devices/{id}/rotate-key", h.handleRotateKey)
-		r.Get("/v1/devices/{id}/peer-config", h.handleGetPeerConfig)
-		r.Delete("/v1/devices/{id}", h.handleDeleteDevice)
+		r.Post("/api/v1/auth/pair/start", h.handlePairStart)
+		r.Get("/api/v1/auth/pair/status", h.handlePairStatus)
+		r.Post("/api/v1/auth/pair/claim", h.pairClaim)
+		r.Get("/api/v1/devices", h.handleListDevices)
+		r.Get("/api/v1/devices/{id}", h.handleGetDevice)
+		r.Post("/api/v1/devices/{id}/heartbeat", h.handleHeartbeat)
+		r.Post("/api/v1/devices/{id}/rotate-key", h.handleRotateKey)
+		r.Get("/api/v1/devices/{id}/peer-config", h.handleGetPeerConfig)
+		r.Delete("/api/v1/devices/{id}", h.handleDeleteDevice)
 	})
 }
 
