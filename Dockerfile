@@ -18,7 +18,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /selkie-server ./cmd/control-serv
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata iproute2 wireguard-tools
 
 COPY --from=server-build /selkie-server /usr/local/bin/selkie-server
 COPY --from=admin-build /src/admin-ui/dist /app/admin-ui/dist

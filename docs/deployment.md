@@ -66,6 +66,7 @@ Runtime shape:
 - `caddy` uses host networking and terminates TLS for `admin.` and `api.`
 - `server` uses host networking and `CAP_NET_ADMIN` so it can create and manage `wg0`
 - `coturn` uses host networking for direct UDP and TCP exposure
+- `TURN_EXTERNAL_IP` must be the VM's literal public IPv4 because coturn rejects hostnames for `--external-ip`
 - `cloudsql-proxy` exposes the shared PostgreSQL instance locally on `127.0.0.1:5432`
 - `redis` listens on the VM and is intended to be reusable by other internal projects later
 
@@ -110,6 +111,7 @@ ADMIN_HOST=admin.selkie.live
 API_HOST=api.selkie.live
 RELAY_HOST=relay.selkie.live
 TURN_HOST=relay.selkie.live
+TURN_EXTERNAL_IP=<vm public IPv4>
 WG_SERVER_ENDPOINT=relay.selkie.live
 WG_SERVER_PORT=51820
 WG_INTERFACE_NAME=wg0
