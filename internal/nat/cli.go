@@ -39,7 +39,7 @@ func (c *CoturnCLI) KillSession(ctx context.Context, turnUsername string) error 
 	if err != nil {
 		return fmt.Errorf("connect to coturn CLI: %w", err)
 	}
-	defer conn.Close() //nolint:errcheck // best-effort close on CLI teardown
+	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
 

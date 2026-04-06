@@ -29,7 +29,7 @@ func NewRedis(ctx context.Context, cfg config.Config) (*Redis, error) {
 	client := redis.NewClient(options)
 	store := &Redis{Client: client}
 	if err := store.Ping(ctx); err != nil {
-		_ = store.Close() //nolint:errcheck // best-effort close on error path
+		_ = store.Close()
 		return nil, fmt.Errorf("ping redis: %w", err)
 	}
 

@@ -27,10 +27,10 @@ func (m *Manager) Init(ctx context.Context, privateKey, address, listenPort stri
 		zap.L().Error("create wireguard private key temp file", zap.Error(err))
 		return err
 	}
-	defer os.Remove(keyFile.Name()) //nolint:errcheck // temp file cleanup is best-effort
+	defer os.Remove(keyFile.Name())
 
 	if _, err := keyFile.WriteString(privateKey); err != nil {
-		_ = keyFile.Close() //nolint:errcheck // best-effort close on error path
+		_ = keyFile.Close()
 		zap.L().Error("write wireguard private key", zap.Error(err), zap.String("interface", m.InterfaceName))
 		return err
 	}

@@ -42,7 +42,7 @@ func (s *StatsSubscriber) Run(ctx context.Context) {
 		"turn/realm/*/user/*/allocation/*/status",
 		"turn/realm/*/user/*/allocation/*/total_traffic",
 	)
-	defer sub.Close() //nolint:errcheck // best-effort close on subscriber teardown
+	defer sub.Close()
 
 	s.logger.Info("coturn statsdb subscriber started")
 

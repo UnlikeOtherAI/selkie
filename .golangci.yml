@@ -15,7 +15,6 @@ output:
       path: stdout
       print-issued-lines: true
       print-linter-name: true
-  sort-results: true
 
 formatters:
   enable:
@@ -182,27 +181,31 @@ linters:
     nestif:
       min-complexity: 6
 
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    paths:
+      - vendor
+      - docs
+      - web
+      - ops
+      - migrations
+    rules:
+      - path: _test\.go
+        linters:
+          - dupl
+          - gocognit
+          - gocyclo
+          - gosec
+          - goconst
+          - noctx
+          - errcheck
+      - path: cmd/.*/main\.go
+        linters:
+          - gocognit
+          - gocyclo
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-use-default: false
-  exclude-dirs:
-    - vendor
-    - docs
-    - web
-    - ops
-    - migrations
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - dupl
-        - gocognit
-        - gocyclo
-        - gosec
-        - goconst
-        - noctx
-        - errcheck
-    - path: cmd/.*/main\.go
-      linters:
-        - gocognit
-        - gocyclo

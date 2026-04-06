@@ -168,12 +168,14 @@ func (h *Handler) handleSessionCandidates(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var column string
+	var column, ownershipClause string
 	switch req.Role {
 	case "requester":
 		column = "requester_candidate_set"
+		ownershipClause = "and requester_user_id = $3"
 	case "target":
 		column = "target_candidate_set"
+		ownershipClause = "and exists (select 1 from devices where id = connect_sessions.target_device_id and owner_user_id = $3)"
 	default:
 		writeError(w, http.StatusBadRequest, "invalid role")
 		return
@@ -188,8 +190,8 @@ func (h *Handler) handleSessionCandidates(w http.ResponseWriter, r *http.Request
 	query := fmt.Sprintf(`update connect_sessions
 		set %s = $1::jsonb,
 			updated_at = now()
-		where id = $2 and requester_user_id = $3
-		  and status not in ('denied', 'closing', 'closed', 'expired', 'failed')`, column)
+		where id = $2 %s
+		  and status not in ('denied', 'closing', 'closed', 'expired', 'failed')`, column, ownershipClause)
 	commandTag, err := h.db.Pool.Exec(r.Context(), query, candidateSet, sessionID, claims.Sub)
 	if err != nil {
 		h.logger.Error("update session candidates", zap.Error(err), zap.String("session_id", sessionID), zap.String("requester_user_id", claims.Sub), zap.String("role", req.Role))
@@ -277,18 +279,18 @@ func (h *Handler) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID) //nolint:errcheck,gosec // best-effort SSE write; deviceID is server-validated UUID, not user-controlled HTML
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID) //nolint:gosec // deviceID is server-validated UUID, not user-controlled HTML
 	flusher.Flush()
 
 	if h.rdb == nil {
-		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"message\":\"SSE unavailable (redis not configured)\"}\n\n") //nolint:errcheck // best-effort SSE write
+		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"message\":\"SSE unavailable (redis not configured)\"}\n\n")
 		flusher.Flush()
 		return
 	}
 
 	channel := fmt.Sprintf("selkie:device:%s:events", deviceID)
 	sub := h.rdb.Subscribe(r.Context(), channel)
-	defer sub.Close() //nolint:errcheck // best-effort close on SSE teardown
+	defer sub.Close()
 
 	redisCh := sub.Channel()
 	ticker := time.NewTicker(25 * time.Second)
@@ -302,7 +304,7 @@ func (h *Handler) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 			if msg == nil {
 				return
 			}
-			_, _ = fmt.Fprintf(w, "event: session\ndata: %s\n\n", msg.Payload) //nolint:errcheck // best-effort SSE write
+			_, _ = fmt.Fprintf(w, "event: session\ndata: %s\n\n", msg.Payload)
 			flusher.Flush()
 		case <-ticker.C:
 			_, _ = io.WriteString(w, ": keepalive\n\n") //nolint:errcheck // best-effort SSE keepalive

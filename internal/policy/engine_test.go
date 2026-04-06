@@ -64,7 +64,7 @@ func TestEvaluate_OPAAllow(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp) //nolint:errcheck // test helper
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -109,7 +109,7 @@ func TestEvaluate_OPADeny(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp) //nolint:errcheck // test helper
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 

@@ -43,7 +43,6 @@ func main() {
 	}
 }
 
-//nolint:gocognit,gocyclo // linear server bootstrap is clearer as one function
 func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
 	// Initialize OpenTelemetry (noop when endpoint is empty).
 	otelShutdown, err := telemetry.Init(ctx, telemetry.Config{
@@ -71,7 +70,7 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		return fmt.Errorf("open redis: %w", err)
 	}
 	if rdb != nil {
-		defer rdb.Close() //nolint:errcheck // best-effort close on shutdown
+		defer rdb.Close()
 		logger.Info("redis connected")
 	} else {
 		logger.Warn("redis disabled (REDIS_URL not set), SSE fan-out unavailable")
@@ -95,7 +94,7 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 			return fmt.Errorf("parse coturn redis statsdb url: %w", err)
 		}
 		statsClient := redis.NewClient(statsOpts)
-		defer statsClient.Close() //nolint:errcheck // best-effort close on shutdown
+		defer statsClient.Close()
 		statsSub := nat.NewStatsSubscriber(statsClient, db, logger)
 		go statsSub.Run(ctx)
 		logger.Info("coturn statsdb subscriber started")
