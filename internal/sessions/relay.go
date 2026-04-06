@@ -52,7 +52,7 @@ func (h *Handler) handleRelayCredentials(w http.ResponseWriter, r *http.Request)
 		r.Context(),
 		`select target_device_id from connect_sessions
 		 where id = $1 and requester_user_id = $2
-		   and status not in ('denied', 'closed', 'expired', 'failed')`,
+		   and status not in ('denied', 'closing', 'closed', 'expired', 'failed')`,
 		sessionID,
 		claims.Sub,
 	).Scan(&targetDeviceID)

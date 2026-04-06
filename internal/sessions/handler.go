@@ -189,7 +189,7 @@ func (h *Handler) handleSessionCandidates(w http.ResponseWriter, r *http.Request
 		set %s = $1::jsonb,
 			updated_at = now()
 		where id = $2 and requester_user_id = $3
-		  and status not in ('denied', 'closed', 'expired', 'failed')`, column)
+		  and status not in ('denied', 'closing', 'closed', 'expired', 'failed')`, column)
 	commandTag, err := h.db.Pool.Exec(r.Context(), query, candidateSet, sessionID, claims.Sub)
 	if err != nil {
 		h.logger.Error("update session candidates", zap.Error(err), zap.String("session_id", sessionID), zap.String("requester_user_id", claims.Sub), zap.String("role", req.Role))
