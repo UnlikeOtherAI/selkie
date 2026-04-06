@@ -311,7 +311,7 @@ a strikethrough on the label. The step is skipped during replay.
 | Error (failed during replay) | Red left accent bar, red background tint `rgba(255,0,0,0.05)`, error icon replaces type icon |
 | Currently executing (replay) | Pulsing blue left accent bar, slight blue background tint |
 | Step disabled (`enabled: false`) | 50% opacity, strikethrough on label. Stacks with other states (e.g. selected + disabled) |
-| UI disabled (idb unavailable) | 50% opacity on all blocks, no pointer events, grey banner shown |
+| UI disabled (idb unavailable) | Record/Preview/Final Record controls disabled, banner shown. Timeline blocks remain interactive for editing, import, and script preparation |
 
 ### Clicking a block highlights on stream
 
@@ -347,13 +347,11 @@ transitions).
 - `Escape`: collapse the expanded block and return focus to the block list.
 - `Delete` / `Backspace`: delete the selected block (with undo).
 
-**Click on stream**: when a block is expanded and showing its position
-indicator on the stream, clicking elsewhere on the stream viewport updates the
-block's coordinates to the clicked position (same as "Re-pick" but implicit).
-This lets the user click a block, then click the stream to reposition it.
-Stream clicks during Timeline editing (including pick mode and implicit re-pick)
-are **not** forwarded to the simulator — they only update coordinates. The stream
-is non-interactive during timeline editing to prevent accidental navigation.
+**Stream interaction during timeline editing:** the stream is non-interactive
+during Timeline tab editing — clicks are not forwarded to the simulator to
+prevent accidental navigation. To change a block's coordinates, use the
+explicit [Re-pick] button which enters a modal pick mode with a banner,
+crosshair cursor, and cancel path (see Re-pick Flow below).
 
 ---
 
@@ -572,7 +570,7 @@ When the user clicks [Re-pick] (or [Re-pick start] / [Re-pick end] for swipe):
   current step completes (input is injected atomically). Resume by clicking
   Play again.
 - **Stop**: aborts execution. The simulator remains in its current state.
-  Sends `DELETE /script/{udid}/run`.
+  Sends `DELETE /script/{udid}/run?run_id={run_id}`.
 - **Tab switching during playback**: switching to the Timeline tab while
   preview is playing or paused does not abort the run. The step list in
   the Preview tab continues updating in the background. However, editing
@@ -596,7 +594,11 @@ If a step fails (idb/adb error, timeout), the step list entry shows a red
 icon and a brief error message. Execution halts. The user can:
 
 - Click the failed step to switch to the Timeline tab with that block expanded.
-- Fix the issue and click [Play] again (resumes from the failed step).
+- Click [Play] again to retry from the failed step (uses `start_from_step`).
+  This only works if no timeline edits were made since the failure. If any
+  step was edited (reorder, insert, delete, property change), Play restarts
+  from step 0 — the simulator state may have diverged from what the edited
+  script expects.
 
 ---
 
@@ -972,6 +974,18 @@ optionally uploaded to the server as named assets attached to the simulator
 service. The server stores them at `/scripts/{service_id}/{script_id}.json`
 under the agent's data directory.
 
+### Save triggers
+
+- **Local autosave:** every edit (reorder, insert, delete, property change,
+  rename) autosaves to localStorage/IndexedDB within 500ms (debounced). The
+  undo stack is not persisted — it is lost on sidebar close or page reload.
+- **Server sync:** the client sends `PUT /scripts/{service_id}/{script_id}`
+  on explicit [Export JSON] click or when starting Preview/Final Record. Edits
+  are not auto-synced to the server — the server copy may lag behind the local
+  copy.
+- **Sidebar close/reopen:** closing the sidebar preserves the local autosave.
+  Reopening the sidebar loads the locally saved script. The undo stack is empty.
+
 The `service_id` identifies the simulator service instance in selkie's service
 catalog. The `udid` is the simulator's unique device identifier. The client
 obtains both from the session metadata when connecting to a stream. Script
@@ -1036,7 +1050,7 @@ Android app, macOS app, Windows/Linux desktop).
 | `script_parser` | Deserialise/validate Script JSON, versioned schema migration |
 | `step_scheduler` | Walk the step list, apply delays and speed multiplier, emit step events, handle pause/resume/abort state transitions |
 | `coordinate_mapper` | Convert between logical pixels, viewport pixels, and canvas pixels given a `ScreenGeometry` struct. Handles scale factor, aspect ratio letterboxing, and rotation |
-| `overlay_geometry` | Compute overlay shapes (circle position, swipe trail path, label pill position) from step data and current canvas size. Does NOT render — returns geometry primitives (circles, lines, rects with colours and timings) for the platform renderer to draw |
+| `overlay_geometry` | Compute overlay shapes (circle position, swipe trail path, label pill position) from step data and current canvas size. Returns static geometry primitives with animation hints — the platform renderer owns multi-phase animation choreography (e.g. expand→hold→fade for taps). Supports two modes: replay animation geometry and selection indicator geometry (crosshair, dashed reference lines) |
 | `script_differ` | Diff two Script objects for undo/redo. Produces a reversible patch (insert, delete, move, property change) |
 | `timeline_model` | In-memory step list with indexed access, insert-at, remove-at, move, multi-select, enable/disable. Emits change events. Backs the timeline UI on all platforms |
 
@@ -1136,8 +1150,9 @@ typedef struct {
   double arrow_size; // for type=5 — arrow head size in px
 } sc_shape;
 
+// mode: 0 = replay animation, 1 = selection indicator (crosshair/dashed)
 int       sc_overlay_shapes(const sc_timeline* t, int step_index,
-                            const sc_screen_geometry* g,
+                            const sc_screen_geometry* g, int mode,
                             sc_shape** shapes_out, int* count_out);
 void      sc_shapes_free(sc_shape* shapes, int count);
 
