@@ -31,6 +31,8 @@ func NewCallbackHandler(db *store.DB, cfg config.Config, auditor *audit.Logger, 
 func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Get("/auth/login", h.ServeLogin)
 	r.Get("/auth/callback", h.ServeCallback)
+	r.Get("/auth/dev-status", h.ServeDevStatus)
+	r.Get("/auth/dev-login", h.ServeDevLogin)
 }
 
 // ServeLogin redirects the user to the UOA authorization URL.
