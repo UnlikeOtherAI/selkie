@@ -351,6 +351,28 @@ This is the standards-based connectivity subsystem.
 * Keep control-plane ownership of credential issuance, allocation tracking,
   and policy gating.
 
+**Allocation lifecycle tracking**
+
+Coturn does not expose a REST or gRPC admin API for allocation queries. The
+two programmatic integration surfaces are:
+
+1. **`redis-statsdb`** — coturn publishes allocation lifecycle and traffic
+   events via Redis pub/sub when configured with `--redis-statsdb`. The
+   control plane subscribes to patterns like
+   `turn/realm/*/user/*/allocation/*/status` and
+   `turn/realm/*/user/*/allocation/*/total_traffic`, then persists events to
+   PostgreSQL (`relay_allocations` table) for audit and billing.
+
+2. **Telnet CLI** — coturn exposes a management CLI on `127.0.0.1:5766` with
+   commands `ps <username>` (list sessions) and `cs <session-id>` (force-
+   cancel). This is the only mechanism for immediate allocation revocation.
+
+The TURN username embeds the connect-session UUID (`expiry:session_id`) so
+statsdb events can be correlated back to `connect_sessions` rows.
+
+See `docs/research/coturn-allocation-tracking.md` for the full integration
+design, Redis key schemas, traffic counter semantics, and revocation gotchas.
+
 STUN can discover mapped address/port and maintain NAT bindings, but it is
 not sufficient alone; TURN is required when direct peer connectivity is
 impossible. coturn is a reusable open-source STUN/TURN implementation.

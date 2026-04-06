@@ -166,6 +166,30 @@ Content-Security-Policy:
 - Self-signed certificates are rejected by default. Development-only bypasses
   must be explicit and CLI-scoped.
 
+## Relay credential security
+
+TURN relay credentials are ephemeral HMAC-SHA1 tokens issued via coturn's
+`use-auth-secret` mechanism. Security properties and limitations:
+
+| Property | Status |
+|---|---|
+| Credential lifetime | 1 hour (configurable) |
+| Credential scope | bound to one connect session |
+| Revocation via credential deletion | blocks new connections only |
+| Revocation of live allocation | requires coturn telnet CLI `cs` command |
+
+**Critical gotcha:** credential TTL expiry does not terminate an established
+TURN allocation. Coturn documents that in long-term credential mode, the
+original password becomes a per-session parameter and persists until
+disconnection. This means:
+
+- Deleting a credential from Redis/PostgreSQL userdb prevents *new*
+  authentication but does not affect a session that already authenticated.
+- Revoking a user or session in the control plane must also call the coturn
+  telnet CLI (`ps <username>` then `cs <session-id>`) to force-terminate the
+  relay allocation.
+- The control plane implements this via `internal/nat/cli.go`.
+
 ## Audit coverage
 
 Every danger-zone operation must emit an audit event with actor, target,
@@ -182,6 +206,7 @@ Danger-zone operations include:
 - change super-user state
 - rotate secrets
 - force disconnect a session
+- force-terminate a relay allocation via coturn CLI
 
 Audit events for these operations are written to `audit_events` even if the
 operation fails or is denied.

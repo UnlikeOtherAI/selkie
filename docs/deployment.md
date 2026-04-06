@@ -54,10 +54,18 @@ services:
       - -n
       - --use-auth-secret
       - --static-auth-secret=${COTURN_SECRET}
-      - --realm=${UOA_DOMAIN}
+      - --realm=${COTURN_REALM:-selkie}
       - --external-ip=${TURN_HOST}
       - --listening-port=${TURN_PORT}
       - --tls-listening-port=5349
+      # Allocation lifecycle tracking via Redis statsdb (pub/sub events).
+      - --redis-statsdb=ip=127.0.0.1 dbname=1 port=6379 connect_timeout=30
+      # Telnet CLI for forced session termination.
+      - --cli-ip=127.0.0.1
+      - --cli-port=5766
+      - --cli-password=${COTURN_CLI_PASSWORD}
+      # Prometheus metrics (optional, port 9641).
+      - --prometheus
     env_file:
       - .env
 
@@ -147,6 +155,7 @@ Required secrets:
 | `UOA_SHARED_SECRET` | UOA HS256 signing and verification secret |
 | `INTERNAL_SESSION_SECRET` | HS256 key for Selkie-issued internal JWTs |
 | `COTURN_SECRET` | TURN REST API HMAC secret shared with coturn |
+| `COTURN_CLI_PASSWORD` | Telnet CLI password for coturn session management |
 | `POSTGRES_PASSWORD` | Postgres password when Compose provisions the DB |
 
 Rules:
@@ -269,6 +278,71 @@ Blue/green is supported with constraints:
 
 Do not run blue/green if the release contains a breaking schema migration that
 the old binary cannot tolerate.
+
+## Coturn integration
+
+Coturn is the STUN/TURN relay. The control plane integrates with it through
+three distinct channels:
+
+### Credential issuance (TURN REST API)
+
+The server mints ephemeral HMAC-SHA1 credentials using `use-auth-secret` with
+`COTURN_SECRET`. The TURN username format is `expiry_timestamp:session_uuid`,
+embedding the connect-session ID for downstream correlation.
+
+**Gotcha:** credential TTL does not imply allocation TTL. After a credential
+expires, an already-established relay session continues flowing traffic until
+the client disconnects or the allocation is force-cancelled. Deleting a
+credential from the userdb does not terminate a live session.
+
+### Allocation tracking (redis-statsdb)
+
+When coturn is configured with `--redis-statsdb`, it publishes allocation
+lifecycle and traffic events via Redis pub/sub:
+
+| Pattern | Event |
+|---|---|
+| `turn/realm/*/user/*/allocation/*/status` | `new lifetime=...`, `refreshed lifetime=...`, `deleted` |
+| `turn/realm/*/user/*/allocation/*/traffic` | periodic `rcvp=..., rcvb=..., sentp=..., sentb=...` |
+| `turn/realm/*/user/*/allocation/*/total_traffic` | final byte totals on allocation delete |
+
+The server subscribes to these patterns (`internal/nat/statsdb.go`) and
+persists events to the `relay_allocations` table. Traffic counters map as:
+`rcvb` = bytes_up (client to relay), `sentb` = bytes_down (relay to client).
+
+**Operational requirement:** the Redis connection used by coturn for statsdb
+must not expire. Configure Redis with `timeout 0` and `tcp-keepalive 60`.
+
+**Reconnection:** if the subscriber misses pub/sub events during a restart,
+reconcile by scanning existing `turn/user/*/allocation/*/status` keys, which
+coturn also stores (not only publishes).
+
+### Forced termination (telnet CLI)
+
+For immediate allocation revocation (policy violation, session close), the
+control plane connects to coturn's telnet CLI:
+
+1. `ps <turn_username>` — list active sessions for the embedded session UUID.
+2. `cs <coturn_session_id>` — force-cancel each session.
+
+This is the **only** reliable kill path. Credential deletion alone does not
+terminate live sessions.
+
+Configuration: `COTURN_CLI_ADDR` (default `127.0.0.1:5766`),
+`COTURN_CLI_PASSWORD`.
+
+### Monitoring (Prometheus)
+
+Coturn's `--prometheus` flag exposes metrics on port 9641:
+
+- `turn_traffic_rcvb`, `turn_traffic_sentb` — aggregate traffic counters
+- `turn_total_traffic_*` — lifetime totals
+
+Do **not** enable `--prometheus-username-labels` with ephemeral TURN REST API
+usernames — coturn warns this causes memory leaks from unbounded label
+cardinality.
+
+See `docs/research/coturn-allocation-tracking.md` for the full research.
 
 ## CLI auto-update strategy
 
