@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/app-icon.png" width="128" height="128" alt="Selkie icon">
+</p>
+
 <h1 align="center">Selkie</h1>
 
 <p align="center">
