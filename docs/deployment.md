@@ -10,7 +10,7 @@ The approved prototype topology is intentionally cheap:
 - `selkie.live` stays on Cloud Run
 - `admin.selkie.live`, `api.selkie.live`, and `relay.selkie.live` terminate on one always-on Belgium VM
 - PostgreSQL stays on the shared UnlikeOtherAI instance
-- Redis, coturn, Caddy, and the Selkie server run on that VM
+- Cloud SQL Auth Proxy, Redis, coturn, Caddy, and the Selkie server run on that VM
 
 ## Prototype topology
 
@@ -33,11 +33,12 @@ Belgium VM
   |
   +--> Caddy
   +--> selkie-server
+  +--> cloud-sql-proxy
   +--> Redis
   +--> coturn
   +--> WireGuard wg0
 
-selkie-server --> shared PostgreSQL
+selkie-server --> cloud-sql-proxy --> shared PostgreSQL
 selkie-server --> local Redis
 coturn --> local Redis statsdb
 ```
@@ -65,11 +66,13 @@ Runtime shape:
 - `caddy` uses host networking and terminates TLS for `admin.` and `api.`
 - `server` uses host networking and `CAP_NET_ADMIN` so it can create and manage `wg0`
 - `coturn` uses host networking for direct UDP and TCP exposure
+- `cloudsql-proxy` exposes the shared PostgreSQL instance locally on `127.0.0.1:5432`
 - `redis` listens on the VM and is intended to be reusable by other internal projects later
 
 Important constraints:
 
 - PostgreSQL is external in this prototype. Do not start a second local Postgres on the VM.
+- the VM needs `roles/cloudsql.client` so the local Cloud SQL Auth Proxy can reach the shared instance
 - Redis `6379` must never be exposed publicly. Limit it to internal VPC access only.
 - IP forwarding must be enabled on the host.
 - the VM is always on; this part cannot scale to zero.
@@ -111,6 +114,7 @@ WG_SERVER_ENDPOINT=relay.selkie.live
 WG_SERVER_PORT=51820
 WG_INTERFACE_NAME=wg0
 WG_OVERLAY_CIDR=10.100.0.0/16
+CLOUDSQL_INSTANCE_CONNECTION_NAME=gen-lang-client-0561071620:europe-west1:uoa-auth-db
 ```
 
 The server overlay address is derived from `WG_OVERLAY_CIDR`. For `10.100.0.0/16`, the server owns `10.100.0.1/16` and each device gets its own `/32`.

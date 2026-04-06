@@ -1,4 +1,15 @@
 services:
+  cloudsql-proxy:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.18.2
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --address
+      - 127.0.0.1
+      - --port
+      - "5432"
+      - ${CLOUDSQL_INSTANCE_CONNECTION_NAME}
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -53,6 +64,8 @@ services:
     cap_add:
       - NET_ADMIN
     depends_on:
+      cloudsql-proxy:
+        condition: service_started
       redis:
         condition: service_healthy
     env_file:
