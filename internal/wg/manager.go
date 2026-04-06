@@ -75,7 +75,7 @@ func (m *Manager) Down(ctx context.Context) error {
 }
 
 func run(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // args are server-controlled WireGuard commands, not user input
+	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		wrapped := fmt.Errorf("run %s %v: %w", name, args, err)

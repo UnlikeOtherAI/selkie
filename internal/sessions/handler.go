@@ -279,7 +279,7 @@ func (h *Handler) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID) //nolint:gosec // deviceID is server-validated UUID, not user-controlled HTML
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID)
 	flusher.Flush()
 
 	if h.rdb == nil {
