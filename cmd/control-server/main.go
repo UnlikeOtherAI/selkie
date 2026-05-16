@@ -40,6 +40,13 @@ func main() {
 	logger := buildLogger(cfg.LogLevel)
 	defer logger.Sync() //nolint:errcheck // best-effort flush on exit
 
+	if err := cfg.Validate(); err != nil {
+		logger.Fatal("invalid configuration", zap.Error(err))
+	}
+	if cfg.InternalSessionSecret == "" && cfg.DevMode {
+		logger.Warn("INTERNAL_SESSION_SECRET is empty; DEV_MODE is enabled, continuing with empty HMAC key — do NOT use this configuration in production")
+	}
+
 	ctx := context.Background()
 	if err := runServe(ctx, cfg, logger); err != nil {
 		logger.Fatal("server exited with error", zap.Error(err))

@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	crand "crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,6 +32,10 @@ const (
 	mobileHandoffExchangeWindow = time.Minute
 	mobileHandoffFailureLimit   = 10
 	mobileHandoffFailureWindow  = time.Minute
+
+	oauthStateCookieName = "selkie_oauth_state"
+	oauthStateTTL        = 10 * time.Minute
+	oauthStateByteLen    = 32
 )
 
 // CallbackHandler handles the OAuth callback from UOA, upserting the user and issuing a session JWT.
@@ -57,13 +63,29 @@ func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Get("/auth/dev-login", h.ServeDevLogin)
 }
 
-// ServeLogin redirects the user to the UOA authorization URL.
-func (*CallbackHandler) ServeLogin(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, BuildAuthURL(), http.StatusFound)
+// ServeLogin issues a fresh OAuth state cookie and redirects to the UOA
+// authorization URL with the state value appended so that ServeCallback can
+// verify the round-trip.
+func (h *CallbackHandler) ServeLogin(w http.ResponseWriter, r *http.Request) {
+	state, err := randomOAuthState()
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Error("generate oauth state", zap.Error(err))
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	setOAuthStateCookie(w, r, state)
+	http.Redirect(w, r, appendQueryParam(BuildAuthURL(), "state", state), http.StatusFound)
 }
 
 // ServeCallback processes the OAuth callback, exchanges the code, upserts the user, and redirects with a JWT.
 func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) {
+	if !h.verifyOAuthState(w, r) {
+		return
+	}
+
 	userID, isSuper, uoaClaims, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
 		writeExchangeError(w, err)
@@ -77,17 +99,24 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 	if displayName == "" {
 		displayName = email
 	}
-	token, err := h.mintToken(userID, isSuper, email, displayName, "")
+	token, err := h.mintToken(userID, isSuper, email, displayName, "", []string{AudienceAdmin})
 	if err != nil {
 		http.Error(w, "token error", http.StatusInternalServerError)
 		return
 	}
 
+	clearOAuthStateCookie(w, r)
 	http.Redirect(w, r, "/admin#token="+token, http.StatusFound)
 }
 
 // ServeMobileCallback exchanges the upstream auth code and redirects with a short-lived one-time handoff code.
 func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Request) {
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	if !isWellFormedOAuthState(state) {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
+
 	userID, _, _, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
 		writeExchangeError(w, err)
@@ -105,7 +134,7 @@ func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	redirectURL, err := mobileRedirectURL(h.cfg.MobileRedirectURL, handoffCode, r.URL.Query().Get("state"))
+	redirectURL, err := mobileRedirectURL(h.cfg.MobileRedirectURL, handoffCode, state)
 	if err != nil {
 		if h.logger != nil {
 			h.logger.Error("build mobile redirect url", zap.Error(err))
@@ -182,7 +211,7 @@ RETURNING u.id, u.email, u.display_name, u.is_super
 		return
 	}
 
-	token, err := h.mintToken(userID, isSuper, email, displayName, "")
+	token, err := h.mintToken(userID, isSuper, email, displayName, "", []string{AudienceMobile})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to mint session token")
 		return
@@ -367,7 +396,10 @@ type jwtClaims struct {
 	jwt.RegisteredClaims
 }
 
-func (h *CallbackHandler) mintToken(userID string, isSuper bool, email, displayName, picture string) (string, error) {
+func (h *CallbackHandler) mintToken(userID string, isSuper bool, email, displayName, picture string, audience []string) (string, error) {
+	if len(audience) == 0 {
+		return "", errors.New("audience is required")
+	}
 	now := time.Now()
 	c := jwtClaims{
 		Sub:         userID,
@@ -376,8 +408,9 @@ func (h *CallbackHandler) mintToken(userID string, isSuper bool, email, displayN
 		DisplayName: displayName,
 		Picture:     picture,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "selkie",
+			Issuer:    Issuer,
 			Subject:   userID,
+			Audience:  jwt.ClaimStrings(audience),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
 		},
@@ -445,6 +478,84 @@ func randomMobileHandoffCode(length int) (string, error) {
 	}
 
 	return string(chars), nil
+}
+
+func randomOAuthState() (string, error) {
+	buf := make([]byte, oauthStateByteLen)
+	if _, err := crand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func isWellFormedOAuthState(state string) bool {
+	if state == "" {
+		return false
+	}
+	if decoded, err := base64.RawURLEncoding.DecodeString(state); err == nil && len(decoded) == oauthStateByteLen {
+		return true
+	}
+	if decoded, err := base64.URLEncoding.DecodeString(state); err == nil && len(decoded) == oauthStateByteLen {
+		return true
+	}
+	if decoded, err := hex.DecodeString(state); err == nil && len(decoded) == oauthStateByteLen {
+		return true
+	}
+	return false
+}
+
+func setOAuthStateCookie(w http.ResponseWriter, r *http.Request, state string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    state,
+		Path:     "/",
+		Expires:  time.Now().Add(oauthStateTTL),
+		MaxAge:   int(oauthStateTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearOAuthStateCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (*CallbackHandler) verifyOAuthState(w http.ResponseWriter, r *http.Request) bool {
+	queryState := strings.TrimSpace(r.URL.Query().Get("state"))
+	cookie, err := r.Cookie(oauthStateCookieName)
+	if err != nil || cookie.Value == "" || queryState == "" || queryState != cookie.Value {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+func isHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); strings.EqualFold(proto, "https") {
+		return true
+	}
+	return false
+}
+
+func appendQueryParam(rawURL, key, value string) string {
+	separator := "?"
+	if strings.Contains(rawURL, "?") {
+		separator = "&"
+	}
+	return rawURL + separator + url.QueryEscape(key) + "=" + url.QueryEscape(value)
 }
 
 func mobileRedirectURL(baseURL, handoffCode, state string) (string, error) {

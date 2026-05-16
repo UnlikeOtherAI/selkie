@@ -59,7 +59,7 @@ func (h *CallbackHandler) ServeDevLogin(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	token, err := h.mintToken(userID, isSuper, DevUserEmail, DevUserDisplayName, DevUserPicture)
+	token, err := h.mintToken(userID, isSuper, DevUserEmail, DevUserDisplayName, DevUserPicture, []string{AudienceAdmin, AudienceMobile})
 	if err != nil {
 		http.Error(w, "token error", http.StatusInternalServerError)
 		return

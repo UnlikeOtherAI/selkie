@@ -28,7 +28,9 @@ func mintToken(t *testing.T, sub string, isSuper bool) string {
 	}{
 		IsSuper: isSuper,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "selkie",
 			Subject:   sub,
+			Audience:  jwt.ClaimStrings{"admin"},
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},

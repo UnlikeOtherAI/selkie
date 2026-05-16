@@ -2,9 +2,16 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 )
+
+// ErrMissingSessionSecret indicates that INTERNAL_SESSION_SECRET was not set in
+// a non-development environment. The control-server must refuse to start when
+// this condition is detected so that requests are never authenticated against
+// an empty HMAC key.
+var ErrMissingSessionSecret = errors.New("INTERNAL_SESSION_SECRET is required when DEV_MODE is false")
 
 // Config holds all runtime configuration values loaded from the environment.
 type Config struct {
@@ -74,6 +81,16 @@ func Load() Config {
 		OPAEndpoint:              os.Getenv("OPA_ENDPOINT"),
 		DevMode:                  getenvBool("DEV_MODE", false),
 	}
+}
+
+// Validate returns an error when required configuration values are missing.
+// It is intentionally strict in non-dev mode so the server fails closed instead
+// of silently accepting any HMAC signature against an empty secret.
+func (c Config) Validate() error {
+	if c.InternalSessionSecret == "" && !c.DevMode {
+		return ErrMissingSessionSecret
+	}
+	return nil
 }
 
 func getenv(key, fallback string) string {
