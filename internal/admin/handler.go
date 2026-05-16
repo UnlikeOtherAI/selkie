@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/unlikeotherai/selkie/internal/audit"
 	"github.com/unlikeotherai/selkie/internal/auth"
 	"github.com/unlikeotherai/selkie/internal/config"
 	"github.com/unlikeotherai/selkie/internal/store"
@@ -19,14 +20,15 @@ type Handler struct {
 	db     *store.DB
 	logger *zap.Logger
 	cfg    config.Config
+	audit  *audit.Logger
 }
 
 // New creates a new admin Handler with the given dependencies.
-func New(db *store.DB, logger *zap.Logger, cfg config.Config) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, auditor *audit.Logger) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Handler{db: db, logger: logger, cfg: cfg}
+	return &Handler{db: db, logger: logger, cfg: cfg, audit: auditor}
 }
 
 // Mount registers admin routes on the given router.
@@ -50,7 +52,7 @@ func (h *Handler) Mount(r chi.Router) {
 
 	// Admin API endpoints require auth and super-user status.
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.Middleware(h.cfg, h.audit))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Get("/api/v1/audit", h.handleListAuditEvents)
 		r.Get("/api/v1/system/info", h.handleSystemInfo)

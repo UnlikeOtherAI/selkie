@@ -63,7 +63,7 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 // Mount registers device routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.Middleware(h.cfg, h.audit))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/auth/pair/start", h.handlePairStart)
 		r.Get("/api/v1/auth/pair/status", h.handlePairStatus)

@@ -14,11 +14,21 @@
   encode zstd gzip
 
   header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    # HSTS without `preload` until the domain is actually submitted to the
+    # browser preload list — claiming preload without registration is a
+    # footgun if the cert ever lapses on a subdomain.
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    # Self-host fonts (the admin UI must drop Google Fonts dependencies in
+    # its build pipeline). Removing fonts.googleapis.com / fonts.gstatic.com
+    # from CSP closes a future-XSS exfiltration vector through query params.
+    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
     Referrer-Policy "no-referrer"
     X-Content-Type-Options "nosniff"
     X-Frame-Options "DENY"
+    Cross-Origin-Opener-Policy "same-origin"
+    Cross-Origin-Embedder-Policy "require-corp"
+    Cross-Origin-Resource-Policy "same-origin"
+    Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()"
   }
 
   @device_events path_regexp device_events ^/api/v1/devices/[^/]+/events$

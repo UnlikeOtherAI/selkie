@@ -18,6 +18,24 @@
 -- Up
 ALTER TABLE device_keys DROP CONSTRAINT IF EXISTS device_keys_wg_public_key_key;
 DROP INDEX IF EXISTS uq_device_keys_public_key;
-CREATE UNIQUE INDEX uq_device_keys_active_public_key
+
+-- Pre-step: if any environment somehow contains multiple state='active' rows
+-- sharing a wg_public_key (e.g. the race the partial index is designed to
+-- close fired before this migration ran), retire all but the newest row per
+-- key so CREATE UNIQUE INDEX below does not abort the migration tx and leave
+-- a fleet of replicas unable to boot.
+UPDATE device_keys
+SET state = 'retired', retired_at = COALESCE(retired_at, now())
+WHERE id IN (
+    SELECT id FROM (
+        SELECT id,
+               row_number() OVER (PARTITION BY wg_public_key ORDER BY created_at DESC, id DESC) AS rn
+        FROM device_keys
+        WHERE state = 'active'
+    ) ranked
+    WHERE rn > 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_device_keys_active_public_key
     ON device_keys (wg_public_key)
     WHERE state = 'active';

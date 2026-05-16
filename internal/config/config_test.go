@@ -3,6 +3,7 @@ package config_test
 import (
 	"errors"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 
@@ -47,32 +48,47 @@ func TestValidate_AcceptsStrongSecret(t *testing.T) {
 }
 
 func TestValidate_DevModeAllowsEmptySecret(t *testing.T) {
-	t.Setenv("CONFIRM_DEV_MODE", "true")
-	cfg := config.Config{DevMode: true}
+	cfg := config.Config{DevMode: true, DevModeConfirmed: true}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate err = %v, want nil in dev mode", err)
 	}
 }
 
 func TestValidate_DevModeWithoutConfirmRejected(t *testing.T) {
-	cases := map[string]string{
-		"unset": "",
-		"empty": "",
-		"false": "false",
-		"yes":   "yes",
-		"1":     "1",
+	cfg := config.Config{DevMode: true, DevModeConfirmed: false}
+	err := cfg.Validate()
+	if !errors.Is(err, config.ErrUnconfirmedDevMode) {
+		t.Fatalf("Validate err = %v, want ErrUnconfirmedDevMode", err)
 	}
-	for name, value := range cases {
+}
+
+func TestLoad_DevModeConfirmedCaptured(t *testing.T) {
+	cases := map[string]struct {
+		value         string
+		wantConfirmed bool
+	}{
+		"unset":          {"", false},
+		"empty":          {"", false},
+		"false":          {"false", false},
+		"non-boolean":    {"yes", false},
+		"numeric_one":    {"1", true},
+		"explicit_true":  {"true", true},
+		"explicit_True":  {"True", true},
+		"explicit_TRUE":  {"TRUE", true},
+		"explicit_false": {"false", false},
+	}
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if name == "unset" {
-				t.Setenv("CONFIRM_DEV_MODE", "")
+			t.Setenv("DEV_MODE", "true")
+			t.Setenv("TRUSTED_PROXY_CIDRS", "")
+			if tc.value == "" && name == "unset" {
+				_ = os.Unsetenv("CONFIRM_DEV_MODE")
 			} else {
-				t.Setenv("CONFIRM_DEV_MODE", value)
+				t.Setenv("CONFIRM_DEV_MODE", tc.value)
 			}
-			cfg := config.Config{DevMode: true}
-			err := cfg.Validate()
-			if !errors.Is(err, config.ErrUnconfirmedDevMode) {
-				t.Fatalf("Validate err = %v, want ErrUnconfirmedDevMode", err)
+			cfg := config.Load()
+			if cfg.DevModeConfirmed != tc.wantConfirmed {
+				t.Fatalf("DevModeConfirmed = %v, want %v (env %q)", cfg.DevModeConfirmed, tc.wantConfirmed, tc.value)
 			}
 		})
 	}
@@ -82,7 +98,6 @@ func TestValidate_RedisRules(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     config.Config
-		setupFn func(*testing.T)
 		wantErr error
 	}{
 		{
@@ -92,10 +107,7 @@ func TestValidate_RedisRules(t *testing.T) {
 		},
 		{
 			name: "empty redis url in dev is allowed",
-			cfg:  config.Config{RedisURL: "", DevMode: true},
-			setupFn: func(t *testing.T) {
-				t.Setenv("CONFIRM_DEV_MODE", "true")
-			},
+			cfg:  config.Config{RedisURL: "", DevMode: true, DevModeConfirmed: true},
 		},
 		{
 			name:    "redis url without password in prod is rejected",
@@ -109,10 +121,7 @@ func TestValidate_RedisRules(t *testing.T) {
 		},
 		{
 			name: "redis url without password in dev is allowed",
-			cfg:  config.Config{RedisURL: "redis://127.0.0.1:6379/0", DevMode: true},
-			setupFn: func(t *testing.T) {
-				t.Setenv("CONFIRM_DEV_MODE", "true")
-			},
+			cfg:  config.Config{RedisURL: "redis://127.0.0.1:6379/0", DevMode: true, DevModeConfirmed: true},
 		},
 		{
 			name: "redis url with password is allowed",
@@ -126,9 +135,6 @@ func TestValidate_RedisRules(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.setupFn != nil {
-				tc.setupFn(t)
-			}
 			err := tc.cfg.Validate()
 			if tc.wantErr == nil {
 				if err != nil {
@@ -369,4 +375,90 @@ func TestParseTrustedProxyCIDRs_4in6PrefixTooWide(t *testing.T) {
 	if !found {
 		t.Fatalf("expected bits<96 warning for too-wide 4in6 prefix; got %v", cfg.Warnings)
 	}
+}
+
+// TestParseTrustedProxyCIDRs_BareIPv4WideMaskRejected asserts that bare IPv4
+// prefixes with masks shorter than /8 (e.g. 0.0.0.0/0) are dropped. Trusting
+// the entire public internet at the XFF layer would let any caller spoof
+// arbitrary chains.
+func TestParseTrustedProxyCIDRs_BareIPv4WideMaskRejected(t *testing.T) {
+	cases := []string{"0.0.0.0/0", "0.0.0.0/4", "10.0.0.0/7"}
+	for _, entry := range cases {
+		t.Run(entry, func(t *testing.T) {
+			t.Setenv("DEV_MODE", "true")
+			t.Setenv("TRUSTED_PROXY_CIDRS", entry)
+
+			cfg := config.Load()
+			if len(cfg.TrustedProxyCIDRs) != 0 {
+				t.Fatalf("wide IPv4 prefix %q should be dropped; got %v", entry, cfg.TrustedProxyCIDRs)
+			}
+			found := false
+			for _, w := range cfg.Warnings {
+				if strings.Contains(w, "too wide") && strings.Contains(w, entry) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected 'too wide' warning for %q; got %v", entry, cfg.Warnings)
+			}
+		})
+	}
+}
+
+// TestParseTrustedProxyCIDRs_BareIPv6WideMaskRejected asserts that bare IPv6
+// prefixes with masks shorter than /16 (e.g. ::/0) are dropped.
+func TestParseTrustedProxyCIDRs_BareIPv6WideMaskRejected(t *testing.T) {
+	cases := []string{"::/0", "::/8", "2001::/15"}
+	for _, entry := range cases {
+		t.Run(entry, func(t *testing.T) {
+			t.Setenv("DEV_MODE", "true")
+			t.Setenv("TRUSTED_PROXY_CIDRS", entry)
+
+			cfg := config.Load()
+			if len(cfg.TrustedProxyCIDRs) != 0 {
+				t.Fatalf("wide IPv6 prefix %q should be dropped; got %v", entry, cfg.TrustedProxyCIDRs)
+			}
+			found := false
+			for _, w := range cfg.Warnings {
+				if strings.Contains(w, "too wide") && strings.Contains(w, entry) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected 'too wide' warning for %q; got %v", entry, cfg.Warnings)
+			}
+		})
+	}
+}
+
+// TestLoad_PanicMessageIncludesWarnings asserts that when every entry is
+// rejected and the result is the empty-trusted panic, the panic message
+// surfaces the parse warnings so the operator can diagnose the typos.
+func TestLoad_PanicMessageIncludesWarnings(t *testing.T) {
+	t.Setenv("DEV_MODE", "false")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "0.0.0.0/0, not-a-cidr")
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when all entries are invalid and DEV_MODE=false")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic payload not a string: %#v", r)
+		}
+		if !strings.Contains(msg, "TRUSTED_PROXY_CIDRS") {
+			t.Fatalf("panic message should mention TRUSTED_PROXY_CIDRS; got %q", msg)
+		}
+		if !strings.Contains(msg, "too wide") {
+			t.Fatalf("panic message should surface bare-CIDR warning; got %q", msg)
+		}
+		if !strings.Contains(msg, "not-a-cidr") {
+			t.Fatalf("panic message should surface parse warning for invalid entry; got %q", msg)
+		}
+	}()
+
+	_ = config.Load()
 }

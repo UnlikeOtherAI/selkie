@@ -76,6 +76,7 @@ type Config struct {
 	OTELExporterOTLPEndpoint string
 	OPAEndpoint              string
 	DevMode                  bool
+	DevModeConfirmed         bool
 	TrustedProxyCIDRs        []netip.Prefix
 	// Warnings collects non-fatal configuration issues surfaced during
 	// Load() so callers can emit them through their structured logger
@@ -96,7 +97,11 @@ func Load() Config {
 		// rate-limit bucket and a trivial DoS surface. Refuse to start
 		// rather than silently misbehave; the operator must opt into
 		// "no trusted proxies" by setting DEV_MODE=true.
-		panic("config: TRUSTED_PROXY_CIDRS is empty and DEV_MODE=false; refusing to start (set TRUSTED_PROXY_CIDRS to your edge proxy CIDR or DEV_MODE=true for local dev)")
+		msg := "config: TRUSTED_PROXY_CIDRS is empty and DEV_MODE=false; refusing to start (set TRUSTED_PROXY_CIDRS to your edge proxy CIDR or DEV_MODE=true for local dev)"
+		if len(trustedWarnings) > 0 {
+			msg = msg + "; parse warnings: " + strings.Join(trustedWarnings, "; ")
+		}
+		panic(msg)
 	}
 	return Config{
 		UOABaseURL:               os.Getenv("UOA_BASE_URL"),
@@ -129,6 +134,7 @@ func Load() Config {
 		OTELExporterOTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OPAEndpoint:              os.Getenv("OPA_ENDPOINT"),
 		DevMode:                  devMode,
+		DevModeConfirmed:         getenvBool("CONFIRM_DEV_MODE", false),
 		TrustedProxyCIDRs:        trusted,
 		Warnings:                 warnings,
 	}
@@ -166,20 +172,33 @@ func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 		// 0.0.0.0/0, which trusts the entire public internet. Refuse any
 		// 4in6 prefix whose normalized v4 mask is shorter than /8 — anything
 		// wider than a single class-A block is almost certainly a typo and
-		// would create a silent security hole.
-		const minNormalized4in6Bits = 8
+		// would create a silent security hole. The same floor applies to
+		// canonical IPv4/IPv6 prefixes: bare 0.0.0.0/0 or ::/0 in the trust
+		// list lets any source spoof its XFF chain.
+		const minV4Bits = 8
+		const minV6Bits = 16
 		if prefix.Addr().Is4In6() {
 			bits := prefix.Bits() - 96
 			if bits < 0 {
 				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring 4in6 prefix %q with bits<96; use the canonical IPv4 form", entry))
 				continue
 			}
-			if bits < minNormalized4in6Bits {
-				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing 4in6 prefix %q; normalized v4 mask /%d trusts too wide a range (min /%d). Use the canonical IPv4 CIDR (e.g. 10.0.0.0/8, 127.0.0.1/32) instead.", entry, bits, minNormalized4in6Bits))
+			if bits < minV4Bits {
+				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing 4in6 prefix %q; normalized v4 mask /%d trusts too wide a range (min /%d). Use the canonical IPv4 CIDR (e.g. 10.0.0.0/8, 127.0.0.1/32) instead.", entry, bits, minV4Bits))
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: 4in6 prefix %q normalized to canonical IPv4 form; configure the IPv4 CIDR directly to silence this warning", entry))
 			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), bits)
+		} else if prefix.Addr().Is4() {
+			if prefix.Bits() < minV4Bits {
+				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing IPv4 prefix %q; mask /%d trusts too wide a range (min /%d)", entry, prefix.Bits(), minV4Bits))
+				continue
+			}
+		} else {
+			if prefix.Bits() < minV6Bits {
+				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing IPv6 prefix %q; mask /%d trusts too wide a range (min /%d)", entry, prefix.Bits(), minV6Bits))
+				continue
+			}
 		}
 		prefixes = append(prefixes, prefix)
 	}
@@ -260,7 +279,7 @@ func getenvInt(key string, fallback int) int {
 //     disables AUTH when the password is empty.
 func (c Config) Validate() error {
 	if c.DevMode {
-		if os.Getenv("CONFIRM_DEV_MODE") != "true" {
+		if !c.DevModeConfirmed {
 			return ErrUnconfirmedDevMode
 		}
 	} else {
@@ -279,7 +298,10 @@ func (c Config) Validate() error {
 	}
 	u, err := url.Parse(c.RedisURL)
 	if err != nil {
-		return fmt.Errorf("config: parse REDIS_URL: %w", err)
+		// Intentionally do not wrap err: url.Error.Error() embeds the
+		// input URL verbatim, which would leak the password through any
+		// logger that captures the error chain.
+		return errors.New("config: REDIS_URL is malformed")
 	}
 	password, hasPassword := u.User.Password()
 	if !hasPassword || password == "" {

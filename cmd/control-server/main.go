@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -50,13 +51,16 @@ func main() {
 		logger.Warn("config warning", zap.String("warning", w))
 	}
 
-	ctx := context.Background()
-	if err := runServe(ctx, cfg, logger); err != nil {
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := runServe(sigCtx, cfg, logger); err != nil {
 		logger.Fatal("server exited with error", zap.Error(err))
 	}
 }
 
-func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
+func runServe(sigCtx context.Context, cfg config.Config, logger *zap.Logger) error {
+	ctx := context.Background()
 	// Initialize OpenTelemetry (noop when endpoint is empty).
 	otelShutdown, err := telemetry.Init(ctx, telemetry.Config{
 		Endpoint:       cfg.OTELExporterOTLPEndpoint,
@@ -89,11 +93,16 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		logger.Warn("redis disabled (REDIS_URL not set), SSE fan-out unavailable")
 	}
 
-	// Validate() guarantees rdb is non-nil in non-dev mode; in dev mode we
-	// leave limiter nil and downstream handlers respond 503 when invoked.
+	// Validate() guarantees rdb is non-nil in non-dev mode. In dev mode we
+	// fall back to a process-local in-memory limiter so rate-limited
+	// endpoints stay testable without Redis. The in-memory limiter is not
+	// safe across replicas; production paths always use RedisLimiter.
 	var limiter ratelimit.Limiter
 	if rdb != nil {
 		limiter = ratelimit.NewRedisLimiter(rdb.Client)
+	} else if cfg.DevMode {
+		limiter = ratelimit.NewMemoryLimiter()
+		logger.Warn("DEV_MODE: using in-memory rate limiter (not safe across replicas)")
 	}
 
 	var overlayAlloc *overlay.Allocator
@@ -119,7 +128,9 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 	// Policy engine (allow-all when OPA_ENDPOINT is empty).
 	policyEngine := policy.New(cfg.OPAEndpoint, logger)
 
-	// Coturn redis-statsdb subscriber for relay allocation tracking.
+	// Coturn redis-statsdb subscriber for relay allocation tracking. Bound
+	// to sigCtx so SIGTERM unblocks the subscriber loop and stops in-flight
+	// Pool.Exec calls before db.Close runs in deferred order.
 	if cfg.CoturnRedisStatsDB != "" {
 		statsOpts, err := redis.ParseURL(cfg.CoturnRedisStatsDB)
 		if err != nil {
@@ -128,18 +139,23 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		statsClient := redis.NewClient(statsOpts)
 		defer statsClient.Close()
 		statsSub := nat.NewStatsSubscriber(statsClient, db, logger)
-		go statsSub.Run(ctx)
+		go statsSub.Run(sigCtx)
 		logger.Info("coturn statsdb subscriber started")
 	}
 
+	// ready is initialized to false and only flipped to true after the
+	// listener has successfully bound. A stuck listener (port-in-use, perm
+	// error) must not be reported as ready to k8s/LB probes.
 	ready := &atomic.Bool{}
-	ready.Store(true)
 
 	r := chi.NewRouter()
 
 	// OTel HTTP middleware (noop when endpoint is empty).
 	r.Use(telemetry.Middleware(cfg.OTELExporterOTLPEndpoint))
 
+	// /healthz is a liveness probe: it stays 200 while the process is alive,
+	// including during the 30s shutdown drain. Use /readyz for drain-aware
+	// routing — k8s should treat the two distinctly.
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -168,11 +184,11 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 	auditor := audit.New(db, logger)
 
 	auth.NewCallbackHandler(db, cfg, auditor, logger, limiter).Mount(r)
-	admin.New(db, logger, cfg).Mount(r)
+	admin.New(db, logger, cfg, auditor).Mount(r)
 	devices.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
 	mobile.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
-	services.New(db, logger, cfg).Mount(r)
-	sessions.New(db, rdb, logger, cfg, policyEngine, limiter).Mount(r)
+	services.New(db, logger, cfg, auditor).Mount(r)
+	sessions.New(db, rdb, logger, cfg, policyEngine, limiter, auditor).Mount(r)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ServerPort),
@@ -180,17 +196,22 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Bind the listener synchronously so a bind failure surfaces as a boot
+	// error rather than a goroutine error after ready has been flipped.
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	ready.Store(true)
+	logger.Info("listening", zap.Int("port", cfg.ServerPort))
+
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("listening", zap.Int("port", cfg.ServerPort))
-		if listenErr := srv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-			errCh <- listenErr
+		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			errCh <- serveErr
 		}
 		close(errCh)
 	}()
-
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	select {
 	case err := <-errCh:

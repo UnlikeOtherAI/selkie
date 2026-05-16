@@ -58,6 +58,7 @@ type Handler struct {
 	cfg          config.Config
 	overlay      *overlay.Allocator
 	audit        auditLogger
+	mwAudit      *audit.Logger
 	hub          HubSyncer
 	limiter      ratelimit.Limiter
 	disconnector mobileDeviceDisconnector
@@ -90,7 +91,7 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	h := &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, hub: hub, limiter: limiter}
+	h := &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, hub: hub, limiter: limiter, mwAudit: auditor}
 	// Preserve nil-ability: a nil *audit.Logger assigned directly to the
 	// auditLogger interface would produce a non-nil interface holding a nil
 	// pointer, defeating the h.audit == nil guard in auditMobileDisconnect.
@@ -103,7 +104,7 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.Middleware(h.cfg, h.mwAudit))
 		r.Use(auth.RequireAudience(auth.AudienceMobile))
 		r.Post("/api/v1/mobile/enroll", h.handleEnroll)
 		r.Get("/api/v1/mobile/servers", h.handleListServers)
@@ -262,7 +263,11 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 			// audit_events.outcome CHECK enum: success | failure | allow | deny | info
 			// (migrations/001_initial.sql:285). Use metadata for finer-grained reasons.
 			h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs, "failure", syncErr)
-			w.Header().Set("Retry-After", strconv.Itoa(int(mobileDisconnectWindow.Seconds())))
+			// +1 second to clear the Redis PEXPIRE boundary (a client
+			// retrying at exactly T+window has a millisecond-scale race
+			// with the still-live counter and would otherwise eat a
+			// fresh lockout).
+			w.Header().Set("Retry-After", strconv.Itoa(int(mobileDisconnectWindow.Seconds())+1))
 			writeError(w, http.StatusServiceUnavailable, "device revoked in database but wireguard sync failed; retry to fully tear down")
 			return
 		}
@@ -292,7 +297,11 @@ func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, us
 		metadata["failure_reason"] = "wg_sync_failed"
 	}
 	if syncErr != nil {
-		msg := syncErr.Error()
+		// Driver-wrapped errors can carry arbitrary bytes. Sanitize
+		// unconditionally before JSON encoding so the short-path is
+		// covered too — and re-sanitize after truncation in case the
+		// 200-byte cut lands inside a multi-byte rune.
+		msg := strings.ToValidUTF8(syncErr.Error(), "")
 		if len(msg) > 200 {
 			msg = strings.ToValidUTF8(msg[:200], "")
 		}

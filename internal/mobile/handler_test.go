@@ -857,7 +857,8 @@ func TestHandleDisconnectSyncFailureAuditOutcome(t *testing.T) {
 
 // TestHandleDisconnectSyncFailureRetryAfterHeader verifies Fix 2: a 503 on
 // SyncAll failure must carry a Retry-After header equal to the
-// mobileDisconnectWindow in seconds so clients can back off programmatically.
+// mobileDisconnectWindow in seconds + 1, so a client retrying at the
+// published instant does not race the still-live Redis bucket boundary.
 func TestHandleDisconnectSyncFailureRetryAfterHeader(t *testing.T) {
 	cfg := config.Config{InternalSessionSecret: "test-secret"}
 	hub := &fakeHub{syncAllErr: errors.New("hub unreachable")}
@@ -879,7 +880,7 @@ func TestHandleDisconnectSyncFailureRetryAfterHeader(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
-	want := strconv.Itoa(int(mobileDisconnectWindow.Seconds()))
+	want := strconv.Itoa(int(mobileDisconnectWindow.Seconds()) + 1)
 	if got := rec.Header().Get("Retry-After"); got != want {
 		t.Fatalf("Retry-After = %q, want %q", got, want)
 	}

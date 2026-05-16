@@ -367,10 +367,24 @@ LIMIT 1
 `, deviceID).Scan(&keyID, &currentKey, &version)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// No active row, but retired rows may exist (prior
+			// /disconnect followed by re-enroll). key_version must
+			// be unique per device across all states (constraint
+			// device_keys_version_unique), so derive the next
+			// version from MAX over every row for this device
+			// rather than hardcoding 1.
+			var nextVersion int
+			if scanErr := tx.QueryRow(ctx, `
+SELECT COALESCE(MAX(key_version), 0) + 1
+FROM device_keys
+WHERE device_id = $1
+`, deviceID).Scan(&nextVersion); scanErr != nil {
+				return scanErr
+			}
 			_, insertErr := tx.Exec(ctx, `
 INSERT INTO device_keys (device_id, key_version, wg_public_key, state)
-VALUES ($1, 1, $2, 'active')
-`, deviceID, publicKey)
+VALUES ($1, $2, $3, 'active')
+`, deviceID, nextVersion, publicKey)
 			return insertErr
 		}
 		return err

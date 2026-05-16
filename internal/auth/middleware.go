@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/unlikeotherai/selkie/internal/audit"
 	"github.com/unlikeotherai/selkie/internal/config"
 )
 
@@ -50,21 +51,39 @@ type sessionClaims struct {
 	jwt.RegisteredClaims
 }
 
-// Middleware returns an HTTP middleware that validates Bearer JWTs and injects Claims into context.
-func Middleware(cfg config.Config) func(http.Handler) http.Handler {
+// Middleware returns an HTTP middleware that validates Bearer JWTs and
+// injects Claims into context. When auditor is non-nil, every rejected
+// request emits an "auth.middleware.reject" audit row with the failure
+// reason so forensic queries can distinguish credential-stuffing from
+// expired tokens.
+func Middleware(cfg config.Config, auditor *audit.Logger) func(http.Handler) http.Handler {
 	secret := []byte(cfg.InternalSessionSecret)
+	trusted := cfg.TrustedProxyCIDRs
+
+	reject := func(w http.ResponseWriter, r *http.Request, reason string) {
+		if auditor != nil {
+			_ = auditor.Log(r.Context(), audit.Event{
+				Action:    "auth.middleware.reject",
+				Outcome:   "deny",
+				RemoteIP:  audit.ClientIP(r, trusted),
+				UserAgent: r.UserAgent(),
+				Metadata:  map[string]any{"reason": reason},
+			})
+		}
+		writeUnauthorized(w)
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 			if authorization == "" {
-				writeUnauthorized(w)
+				reject(w, r, "missing_authorization")
 				return
 			}
 
 			tokenString := strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
 			if tokenString == authorization || tokenString == "" {
-				writeUnauthorized(w)
+				reject(w, r, "missing_bearer_scheme")
 				return
 			}
 
@@ -82,7 +101,7 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 				jwt.WithLeeway(JWTLeeway),
 			)
 			if err != nil || !token.Valid || parsedClaims.Subject == "" {
-				writeUnauthorized(w)
+				reject(w, r, "invalid_token")
 				return
 			}
 
@@ -92,7 +111,7 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 				Audience: []string(parsedClaims.Audience),
 			}
 			if !claims.HasAudience(AudienceAdmin) && !claims.HasAudience(AudienceMobile) {
-				writeUnauthorized(w)
+				reject(w, r, "unrecognized_audience")
 				return
 			}
 

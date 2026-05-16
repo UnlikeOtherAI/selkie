@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/unlikeotherai/selkie/internal/audit"
 	"github.com/unlikeotherai/selkie/internal/auth"
 	"github.com/unlikeotherai/selkie/internal/config"
 	"github.com/unlikeotherai/selkie/internal/policy"
@@ -37,21 +38,22 @@ type Handler struct {
 	cfg     config.Config
 	policy  *policy.Engine
 	limiter ratelimit.Limiter
+	audit   *audit.Logger
 }
 
 // New creates a sessions Handler with the given dependencies.
-func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config, pe *policy.Engine, limiter ratelimit.Limiter) *Handler {
+func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config, pe *policy.Engine, limiter ratelimit.Limiter, auditor *audit.Logger) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	return &Handler{db: db, rdb: rdb, logger: logger, cfg: cfg, policy: pe, limiter: limiter}
+	return &Handler{db: db, rdb: rdb, logger: logger, cfg: cfg, policy: pe, limiter: limiter, audit: auditor}
 }
 
 // Mount registers session routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.Middleware(h.cfg, h.audit))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/sessions", h.handleCreateSession)
 		r.Post("/api/v1/sessions/{id}/candidates", h.handleSessionCandidates)
