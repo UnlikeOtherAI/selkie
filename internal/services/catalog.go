@@ -39,6 +39,7 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config) *Handler {
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/devices/{id}/services", h.handleUpsertServices)
 		r.Get("/api/v1/devices/{id}/services", h.handleListDeviceServices)
 		r.Get("/api/v1/services", h.handleListAllServices)

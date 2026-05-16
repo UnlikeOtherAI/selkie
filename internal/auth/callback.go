@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -533,7 +534,10 @@ func clearOAuthStateCookie(w http.ResponseWriter, r *http.Request) {
 func (*CallbackHandler) verifyOAuthState(w http.ResponseWriter, r *http.Request) bool {
 	queryState := strings.TrimSpace(r.URL.Query().Get("state"))
 	cookie, err := r.Cookie(oauthStateCookieName)
-	if err != nil || cookie.Value == "" || queryState == "" || queryState != cookie.Value {
+	if err != nil || cookie.Value == "" || queryState == "" ||
+		subtle.ConstantTimeCompare([]byte(queryState), []byte(cookie.Value)) != 1 {
+		// Clear the state cookie so an attacker cannot retry inside the TTL window.
+		clearOAuthStateCookie(w, r)
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return false
 	}

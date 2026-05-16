@@ -13,6 +13,15 @@ import (
 // an empty HMAC key.
 var ErrMissingSessionSecret = errors.New("INTERNAL_SESSION_SECRET is required when DEV_MODE is false")
 
+// ErrWeakSessionSecret indicates that INTERNAL_SESSION_SECRET is set but too
+// short to provide meaningful HMAC strength. We require at least 32 bytes in
+// production so brute-forcing the HMAC key is not feasible.
+var ErrWeakSessionSecret = errors.New("INTERNAL_SESSION_SECRET must be at least 32 bytes when DEV_MODE is false")
+
+// MinSessionSecretLen is the minimum acceptable length for the HMAC session
+// secret in production. 32 bytes matches the output width of HMAC-SHA256.
+const MinSessionSecretLen = 32
+
 // Config holds all runtime configuration values loaded from the environment.
 type Config struct {
 	UOABaseURL               string
@@ -87,8 +96,13 @@ func Load() Config {
 // It is intentionally strict in non-dev mode so the server fails closed instead
 // of silently accepting any HMAC signature against an empty secret.
 func (c Config) Validate() error {
-	if c.InternalSessionSecret == "" && !c.DevMode {
-		return ErrMissingSessionSecret
+	if !c.DevMode {
+		if c.InternalSessionSecret == "" {
+			return ErrMissingSessionSecret
+		}
+		if len(c.InternalSessionSecret) < MinSessionSecretLen {
+			return ErrWeakSessionSecret
+		}
 	}
 	return nil
 }

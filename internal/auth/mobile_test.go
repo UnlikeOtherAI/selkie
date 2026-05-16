@@ -79,6 +79,16 @@ func TestVerifyOAuthState(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
+	// On mismatch the cookie must be cleared so a future request cannot replay it.
+	var cleared bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == oauthStateCookieName && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("expected state cookie to be cleared on mismatch")
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state, nil)
 	rec = httptest.NewRecorder()

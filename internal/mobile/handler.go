@@ -75,6 +75,7 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.RequireAudience(auth.AudienceMobile))
 		r.Post("/api/v1/mobile/enroll", h.handleEnroll)
 		r.Get("/api/v1/mobile/servers", h.handleListServers)
 		r.Post("/api/v1/mobile/disconnect", h.handleDisconnect)

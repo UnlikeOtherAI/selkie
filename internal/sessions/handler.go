@@ -52,6 +52,7 @@ func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config, 
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/sessions", h.handleCreateSession)
 		r.Post("/api/v1/sessions/{id}/candidates", h.handleSessionCandidates)
 		r.Post("/api/v1/sessions/{id}/relay", h.handleRelayCredentials)
