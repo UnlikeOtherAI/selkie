@@ -42,11 +42,12 @@ import (
 // in-flight connections.
 const shutdownGrace = 30 * time.Second
 
-// errSilentServeExit signals that srv.Serve returned without an error AND
-// without a SIGTERM having arrived. This should never happen unless the
-// process state was tampered with; surfacing it as an error prevents a
-// silent zero-exit when the listener vanishes on its own.
-var errSilentServeExit = errors.New("http server stopped accepting before shutdown signal")
+// errPrematureServerClose signals that srv.Serve returned http.ErrServerClosed
+// (mapped to nil on errCh by the serve goroutine) before sigCtx fired. The
+// only way to observe ErrServerClosed is via srv.Shutdown or srv.Close — if
+// neither was triggered by our shutdown path, something external closed the
+// server and we must not exit silently.
+var errPrematureServerClose = errors.New("http server closed before shutdown signal")
 
 func main() {
 	cfg := config.Load()
@@ -70,14 +71,18 @@ func main() {
 	// once, so a second Ctrl-C or SIGTERM during the 30s shutdown drain
 	// would otherwise be a no-op. forceShutdown is closed on the second
 	// signal so runServe can cancel its shutdown context and force-quit.
+	//
+	// signal.Notify must be registered AFTER sigCtx fires. Go delivers
+	// signals to every registered channel, so registering ch up front
+	// would cause the FIRST SIGTERM to be buffered into ch as well,
+	// collapsing the second-signal escalator into immediate force-quit
+	// on the first signal.
 	forceShutdown := make(chan struct{})
 	go func() {
+		<-sigCtx.Done()
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(ch)
-		// Wait for the first signal — that one is consumed by sigCtx,
-		// not by us. The second signal triggers the force-quit.
-		<-sigCtx.Done()
 		select {
 		case <-ch:
 			close(forceShutdown)
@@ -171,18 +176,17 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	// Policy engine (allow-all when OPA_ENDPOINT is empty).
 	policyEngine := policy.New(cfg.OPAEndpoint, logger)
 
-	// statsWG tracks the coturn statsdb subscriber goroutine. It is
-	// registered BEFORE the db.Close defer so the LIFO unwind runs
-	// statsWG.Wait() first — waiting until statsSub.Run() has fully
-	// exited — and only then closes the database pool. Without this, a
-	// SIGTERM-during-Exec race would have statsClient.Close → rdb.Close
-	// → db.Close firing while the subscriber still holds an acquired
-	// pgx connection mid-Exec, leaving "closed pool" errors and racing
-	// pgx's internal pool state. The WaitGroup-defer ordering is the
-	// critical part: defer order is LIFO, so statsWG.Wait must be added
-	// AFTER db.Close to run BEFORE it.
-	var statsWG sync.WaitGroup
-	defer statsWG.Wait()
+	// Statsdb subscriber. Defer order is LIFO, so registration sequence
+	// matters: we want unwind order statsWG.Wait → statsClient.Close →
+	// rdb.Close → db.Close. The subscriber holds the Redis client *and*
+	// an acquired pgx connection mid-Exec; if statsClient or the db pool
+	// is closed before the goroutine returns, Exec races against a
+	// torn-down dependency.
+	//
+	// Registration order below: statsClient.Close FIRST, then statsWG.Wait
+	// SECOND. LIFO then runs Wait first (subscriber exits), then closes
+	// the redis client, and only after that does the outer rdb.Close /
+	// db.Close defer chain run.
 	if cfg.CoturnRedisStatsDB != "" {
 		statsOpts, err := redis.ParseURL(cfg.CoturnRedisStatsDB)
 		if err != nil {
@@ -190,6 +194,8 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 		}
 		statsClient := redis.NewClient(statsOpts)
 		defer statsClient.Close()
+		var statsWG sync.WaitGroup
+		defer statsWG.Wait()
 		statsSub := nat.NewStatsSubscriber(statsClient, db, logger)
 		statsWG.Add(1)
 		go func() {
@@ -290,7 +296,7 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	select {
 	case serveErr := <-errCh:
 		if serveErr == nil {
-			return errSilentServeExit
+			return errPrematureServerClose
 		}
 		return serveErr
 	case <-sigCtx.Done():
@@ -301,13 +307,17 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
-	// A second SIGTERM during the drain cancels shutCtx, escalating
-	// srv.Shutdown to a forced-close on in-flight connections.
+	// A second SIGTERM during the drain force-closes in-flight connections.
+	// http.Server.Shutdown returns when the shutdown context is cancelled
+	// but does NOT actually close hijacked or long-running connections —
+	// only srv.Close() does. So we cancel() to unblock Shutdown AND call
+	// srv.Close() to terminate sockets that ignore graceful drain.
 	go func() {
 		select {
 		case <-forceShutdown:
 			logger.Warn("second shutdown signal received, forcing close of in-flight connections")
 			cancel()
+			_ = srv.Close()
 		case <-shutCtx.Done():
 		}
 	}()

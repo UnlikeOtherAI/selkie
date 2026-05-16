@@ -143,20 +143,27 @@ Required XSS mitigations:
    tags from devices.
 5. Treat `localStorage` as sensitive because XSS can read it instantly.
 
-Recommended CSP baseline:
+Shipped CSP for the admin host (see `ops/Caddyfile`, snippet
+`selkie_admin_headers`):
 
 ```http
 Content-Security-Policy:
   default-src 'self';
   script-src 'self';
-  style-src 'self' https://fonts.googleapis.com;
-  font-src 'self' https://fonts.gstatic.com;
-  img-src 'self' data:;
+  style-src 'self';
+  font-src 'self';
+  img-src 'self' data: https://*.googleusercontent.com;
   connect-src 'self';
   object-src 'none';
   base-uri 'self';
   frame-ancestors 'none'
 ```
+
+Fonts are self-hosted via `@fontsource` and bundled by Vite, so no third-party
+font CDN appears in the policy. The single remote allowance is
+`https://*.googleusercontent.com` in `img-src` for the user avatar loaded
+cross-origin with `crossorigin="anonymous"` — CORS satisfies the COEP
+`require-corp` requirement set alongside this policy.
 
 ## Transport security
 

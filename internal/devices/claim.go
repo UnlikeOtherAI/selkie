@@ -230,7 +230,7 @@ func (h *Handler) allowPairClaim(ctx context.Context, w http.ResponseWriter, sou
 	}
 
 	keys := []string{
-		ratelimit.Key("devices", "pair", "claim", "failure", "ip", sourceIP),
+		ratelimit.Key("devices", "pair", "claim", "failure", "ip", audit.RateLimitIP(sourceIP)),
 		ratelimit.Key("devices", "pair", "claim", "failure", "code", ratelimit.HashToken(code)),
 	}
 	for _, key := range keys {
@@ -272,7 +272,7 @@ func (h *Handler) recordPairClaimFailure(ctx context.Context, sourceIP, code str
 		key    string
 		window time.Duration
 	}{
-		{key: ratelimit.Key("devices", "pair", "claim", "failure", "ip", sourceIP), window: pairClaimSourceLockWindow},
+		{key: ratelimit.Key("devices", "pair", "claim", "failure", "ip", audit.RateLimitIP(sourceIP)), window: pairClaimSourceLockWindow},
 		{key: ratelimit.Key("devices", "pair", "claim", "failure", "code", ratelimit.HashToken(code)), window: pairClaimCodeLockWindow},
 	}
 

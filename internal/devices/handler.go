@@ -110,7 +110,7 @@ func (h *Handler) handlePairStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.allowRateLimit(r.Context(), w, ratelimit.Key("devices", "pair", "start", "ip", audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)), pairStartLimit, pairStartWindow) {
+	if !h.allowRateLimit(r.Context(), w, ratelimit.Key("devices", "pair", "start", "ip", audit.RateLimitIP(audit.ClientIP(r, h.cfg.TrustedProxyCIDRs))), pairStartLimit, pairStartWindow) {
 		return
 	}
 

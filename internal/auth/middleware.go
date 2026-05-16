@@ -89,7 +89,13 @@ func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limi
 			if shouldAuditReject(r.Context(), limiter, ip) {
 				ua := r.UserAgent()
 				if len(ua) > maxAuditUserAgent {
-					ua = ua[:maxAuditUserAgent]
+					// Truncate on a byte boundary then strip any partial
+					// multi-byte rune at the tail. Without this, a UA that
+					// happens to straddle a UTF-8 boundary at offset 512
+					// becomes invalid UTF-8 and Postgres rejects the audit
+					// INSERT — the very write the truncation was meant to
+					// keep cheap.
+					ua = strings.ToValidUTF8(ua[:maxAuditUserAgent], "")
 				}
 				// Detach from r.Context() so a client TCP-RST mid-write
 				// (typical credential-stuffer signature) cannot suppress
@@ -168,7 +174,7 @@ func shouldAuditReject(ctx context.Context, limiter ratelimit.Limiter, ip string
 	if limiter == nil || ip == "" {
 		return true
 	}
-	decision, err := limiter.Allow(ctx, ratelimit.Key("auth", "reject", "ip", ip), rejectAuditLimit, rejectAuditWindow)
+	decision, err := limiter.Allow(ctx, ratelimit.Key("auth", "reject", "ip", audit.RateLimitIP(ip)), rejectAuditLimit, rejectAuditWindow)
 	if err != nil {
 		return true
 	}

@@ -219,3 +219,34 @@ func nullIfEmpty(s string) *string {
 	}
 	return &s
 }
+
+// RateLimitIP returns the rate-limit bucket key for a peer IP. IPv4 is
+// returned unchanged so per-host limits stay precise. IPv6 is collapsed to
+// its /64 prefix because IPv6 hosts are routinely assigned an entire /64 by
+// ISPs; rate-limiting at /128 lets a single attacker cycle 2^64 addresses
+// inside one provisioning to bypass per-IP limits. The /64 group is the
+// smallest unit where the cost of address rotation actually rises.
+//
+// Audit rows still record the full /128 so forensic queries retain host
+// granularity; only the rate-limit keys aggregate at /64.
+//
+// An empty or unparseable input returns an empty string so callers can
+// short-circuit without keying on a junk bucket.
+func RateLimitIP(ip string) string {
+	if ip == "" {
+		return ""
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	prefix, err := addr.Prefix(64)
+	if err != nil {
+		return addr.String()
+	}
+	return prefix.Masked().String()
+}

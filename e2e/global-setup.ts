@@ -58,6 +58,7 @@ async function globalSetup(config: FullConfig) {
         DATABASE_URL: dbUrl,
         REDIS_URL: process.env.E2E_REDIS_URL || "redis://localhost:6379",
         DEV_MODE: "true",
+        CONFIRM_DEV_MODE: "true",
         SERVER_PORT: String(port),
         LOG_LEVEL: "warn",
         INTERNAL_SESSION_SECRET: "e2e-test-secret-that-is-long-enough",

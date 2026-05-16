@@ -138,14 +138,14 @@ func Load() Config {
 		LogLevel:                 getenv("LOG_LEVEL", "info"),
 		OTELExporterOTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OPAEndpoint:              os.Getenv("OPA_ENDPOINT"),
-		DevMode: devMode,
+		DevMode:                  devMode,
 		// CONFIRM_DEV_MODE must be the literal string "true". Accepting
 		// ParseBool's wider set (1, t, T, TRUE, True) would silently widen
 		// a security gate that should require an unambiguous, human-typed
 		// acknowledgement.
 		devModeConfirmed:  os.Getenv("CONFIRM_DEV_MODE") == "true",
 		TrustedProxyCIDRs: trusted,
-		Warnings:                 warnings,
+		Warnings:          warnings,
 	}
 }
 

@@ -39,17 +39,14 @@ jobs:
         run: |
           set -euo pipefail
           file=ops/Caddyfile
-          # Must NOT contain the legacy interest-cohort directive — that line
-          # leaked Google FLoC opt-out semantics into our Permissions-Policy
-          # and was removed in the round-2 sweep.
-          # Strip comments before searching so an explanatory comment about the
-          # removed directive doesn't trip the check.
-          if sed 's/#.*$//' "$file" | grep -q 'interest-cohort'; then
+          # Strip comments first; otherwise an explanatory comment that mentions
+          # a header name (or interest-cohort) could satisfy the check without
+          # the real directive being present.
+          stripped=$(sed 's/#.*$//' "$file")
+          if printf '%s\n' "$stripped" | grep -q 'interest-cohort'; then
             echo "::error file=$file::interest-cohort directive must not be present"
             exit 1
           fi
-          # Required hardening headers (round-2 baseline). If any of these
-          # disappear, the build fails.
           required=(
             'Strict-Transport-Security'
             'Content-Security-Policy'
@@ -62,11 +59,23 @@ jobs:
             'Permissions-Policy'
           )
           for h in "${required[@]}"; do
-            if ! grep -q "$h" "$file"; then
+            if ! printf '%s\n' "$stripped" | grep -q "$h"; then
               echo "::error file=$file::required header $h missing"
               exit 1
             fi
           done
+
+  ios-lint:
+    name: ios lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install swiftlint
+        run: brew install swiftlint
+
+      - name: swiftlint
+        run: ./App/ios/scripts/lint.sh
 
   build-test:
     name: build + test
@@ -205,11 +214,10 @@ jobs:
           path: e2e/playwright-report/
           retention-days: 7
 
-  # Placeholder — deploy job runs only on main after all checks pass.
   deploy:
     name: deploy (placeholder)
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [lint, build-test, web, e2e]
+    needs: [lint, ios-lint, build-test, web, e2e]
     runs-on: ubuntu-latest
     steps:
       - run: echo "TODO — deploy to Google Cloud"

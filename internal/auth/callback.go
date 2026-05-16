@@ -166,7 +166,7 @@ func (h *CallbackHandler) ServeMobileHandoffExchange(w http.ResponseWriter, r *h
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.ClientIP(r, h.cfg.TrustedProxyCIDRs), ratelimit.HashToken(handoffCode)), mobileHandoffExchangeLimit, mobileHandoffExchangeWindow) {
+	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.RateLimitIP(audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)), ratelimit.HashToken(handoffCode)), mobileHandoffExchangeLimit, mobileHandoffExchangeWindow) {
 		cancel()
 		return
 	}
@@ -252,7 +252,7 @@ func (h *CallbackHandler) allowRateLimit(ctx context.Context, w http.ResponseWri
 
 func (h *CallbackHandler) recordMobileHandoffFailure(ctx context.Context, sourceIP, handoffCode string) (bool, error) {
 	keys := []string{
-		ratelimit.Key("mobile", "handoff", "failure", "ip", sourceIP),
+		ratelimit.Key("mobile", "handoff", "failure", "ip", audit.RateLimitIP(sourceIP)),
 		ratelimit.Key("mobile", "handoff", "failure", "code", ratelimit.HashToken(handoffCode)),
 	}
 	for _, key := range keys {
