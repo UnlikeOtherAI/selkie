@@ -122,6 +122,39 @@ func TestMintTokenRequiresAudience(t *testing.T) {
 	}
 }
 
+func TestServeCallback_StateClearedEvenOnExchangeFailure(t *testing.T) {
+	h := &CallbackHandler{cfg: config.Config{InternalSessionSecret: "secret"}, logger: zap.NewNop()}
+
+	state := base64.RawURLEncoding.EncodeToString(make([]byte, oauthStateByteLen))
+	// Drive ServeCallback with a valid state cookie but no `code` query param.
+	// exchangeAndUpsertUser will return errMissingCode before any upstream call.
+	req := httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state, nil)
+	req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: state})
+	rec := httptest.NewRecorder()
+
+	h.ServeCallback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "missing code") {
+		t.Fatalf("body = %q, want missing code", rec.Body.String())
+	}
+
+	var cleared bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name != oauthStateCookieName {
+			continue
+		}
+		if c.MaxAge < 0 || (!c.Expires.IsZero() && c.Expires.Before(time.Now())) {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("expected state cookie to be cleared even when exchange fails")
+	}
+}
+
 func TestServeMobileHandoffExchangeRateLimited(t *testing.T) {
 	h := NewCallbackHandler(nil, config.Config{}, nil, zap.NewNop(), fakeLimiter{
 		decision: ratelimit.Decision{Allowed: false, RetryAfter: 5 * time.Second},

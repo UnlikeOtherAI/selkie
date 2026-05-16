@@ -18,6 +18,12 @@ var ErrMissingSessionSecret = errors.New("INTERNAL_SESSION_SECRET is required wh
 // production so brute-forcing the HMAC key is not feasible.
 var ErrWeakSessionSecret = errors.New("INTERNAL_SESSION_SECRET must be at least 32 bytes when DEV_MODE is false")
 
+// ErrUnconfirmedDevMode indicates that DEV_MODE=true was set without the
+// matching CONFIRM_DEV_MODE=true acknowledgement. A single misconfigured env
+// var must not be enough to silently disable HMAC validation and unlock
+// /auth/dev-login in production.
+var ErrUnconfirmedDevMode = errors.New("DEV_MODE=true requires CONFIRM_DEV_MODE=true to start; refusing to boot without explicit confirmation")
+
 // MinSessionSecretLen is the minimum acceptable length for the HMAC session
 // secret in production. 32 bytes matches the output width of HMAC-SHA256.
 const MinSessionSecretLen = 32
@@ -96,13 +102,19 @@ func Load() Config {
 // It is intentionally strict in non-dev mode so the server fails closed instead
 // of silently accepting any HMAC signature against an empty secret.
 func (c Config) Validate() error {
-	if !c.DevMode {
-		if c.InternalSessionSecret == "" {
-			return ErrMissingSessionSecret
+	if c.DevMode {
+		// DEV_MODE alone is not enough: a single misconfigured env var must not
+		// silently disable HMAC validation. Require an explicit second flag.
+		if os.Getenv("CONFIRM_DEV_MODE") != "true" {
+			return ErrUnconfirmedDevMode
 		}
-		if len(c.InternalSessionSecret) < MinSessionSecretLen {
-			return ErrWeakSessionSecret
-		}
+		return nil
+	}
+	if c.InternalSessionSecret == "" {
+		return ErrMissingSessionSecret
+	}
+	if len(c.InternalSessionSecret) < MinSessionSecretLen {
+		return ErrWeakSessionSecret
 	}
 	return nil
 }

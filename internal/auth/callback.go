@@ -86,6 +86,9 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 	if !h.verifyOAuthState(w, r) {
 		return
 	}
+	// State has served its CSRF purpose; clear immediately so a failed upstream
+	// exchange cannot leave a replayable cookie for the rest of the TTL window.
+	clearOAuthStateCookie(w, r)
 
 	userID, isSuper, uoaClaims, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
@@ -106,7 +109,6 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	clearOAuthStateCookie(w, r)
 	http.Redirect(w, r, "/admin#token="+token, http.StatusFound)
 }
 
