@@ -223,26 +223,47 @@ func TestClientIP_IPv4MappedAttackerLeftmostUnmapped(t *testing.T) {
 	}
 }
 
-// TestClientIP_ZonedIPv6Stripped covers two invariants simultaneously:
-//  1. Zone stripping: "%eth0" is removed before any downstream processing.
-//  2. Address-class rejection: after stripping, fe80::1 is link-local unicast
-//     and cannot be a real client address. It must be rejected and fall back to
-//     the peer rather than being returned — even though it is "parseable" — to
-//     prevent link-local injection into rate-limit buckets or audit rows.
-//
-// The returned value must therefore be the peer IP, not fe80::1.
+// TestClientIP_ZonedIPv6Stripped verifies that a zone suffix ("%eth0") in an
+// XFF address is stripped before the address is evaluated or returned. The
+// previous version of this test used fe80::1%eth0, which is correctly
+// rejected by the link-local class check before zone-strip semantics are
+// observable. This revision uses a documentation-range address (2001:db8::1)
+// that passes all class checks. The peer (127.0.0.1) is trusted so XFF is
+// honored; 2001:db8::1 is not in any trusted prefix so it is returned as the
+// rightmost-non-trusted entry. The returned string must be "2001:db8::1"
+// with no "%" suffix, confirming that zone-strip runs before the address is
+// returned.
 func TestClientIP_ZonedIPv6Stripped(t *testing.T) {
+	// Only trust loopback — 2001:db8::1 is not trusted and will be returned.
+	trusted := mustPrefixes(t, "127.0.0.0/8")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "127.0.0.1:54321"
-	req.Header.Set("X-Forwarded-For", "fe80::1%eth0")
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "2001:db8::1%eth0")
 
-	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8"))
-	if strings.Contains(got, "%") {
-		t.Fatalf("returned address must not retain zone suffix; got %q", got)
+	got := audit.ClientIP(req, trusted)
+	if got != "2001:db8::1" {
+		t.Fatalf("zone not stripped: got %q", got)
 	}
-	// fe80::1 is link-local and must be rejected; fallback is the peer.
-	if got != "127.0.0.1" {
-		t.Fatalf("link-local zoned XFF must fall back to peer 127.0.0.1; got %q", got)
+	if strings.Contains(got, "%") {
+		t.Fatalf("got contains zone suffix: %q", got)
+	}
+}
+
+// TestClientIP_PeerZonedStripped verifies zone stripping on the peer side.
+// When RemoteAddr contains a zoned IPv6 address (e.g. [fe80::1%eth0]:1234)
+// and no trusted prefixes are configured, the function falls back to the peer.
+// The returned peer string must have the zone suffix stripped even though
+// fe80::1 would also be class-rejected on the XFF path.
+func TestClientIP_PeerZonedStripped(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[fe80::1%eth0]:1234"
+
+	got := audit.ClientIP(req, nil)
+	if strings.Contains(got, "%") {
+		t.Fatalf("peer zone suffix must be stripped; got %q", got)
+	}
+	if got != "fe80::1" {
+		t.Fatalf("expected zone-stripped peer fe80::1; got %q", got)
 	}
 }
 
@@ -300,6 +321,7 @@ func TestClientIP_RejectsBogusAddressClasses(t *testing.T) {
 		{"link-local unicast v4", "169.254.1.1"},
 		{"link-local unicast v6", "fe80::1"},
 		{"limited broadcast", "255.255.255.255"},
+		{"site-local v6", "fec0::1"},
 	}
 	trusted := mustPrefixes(t, "127.0.0.0/8")
 	for _, tc := range cases {

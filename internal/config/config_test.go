@@ -142,6 +142,66 @@ func TestParseTrustedProxyCIDRs_4in6PrefixNormalized(t *testing.T) {
 	}
 }
 
+// TestParseTrustedProxyCIDRs_4in6WideMaskRejected is a table-driven test
+// asserting that 4in6 prefixes whose normalized v4 mask is shorter than /8
+// are dropped with the "too wide" warning rather than silently trusting a
+// vast address range (e.g. ::ffff:0.0.0.0/96 → 0.0.0.0/0).
+func TestParseTrustedProxyCIDRs_4in6WideMaskRejected(t *testing.T) {
+	cases := []struct {
+		entry    string
+		normBits int
+	}{
+		{"::ffff:0.0.0.0/96", 0},
+		{"::ffff:0.0.0.0/97", 1},
+		{"::ffff:10.0.0.0/103", 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.entry, func(t *testing.T) {
+			t.Setenv("DEV_MODE", "true")
+			t.Setenv("TRUSTED_PROXY_CIDRS", tc.entry)
+
+			cfg := config.Load()
+			if len(cfg.TrustedProxyCIDRs) != 0 {
+				t.Fatalf("wide 4in6 prefix %q should be dropped; got %v", tc.entry, cfg.TrustedProxyCIDRs)
+			}
+			found := false
+			for _, w := range cfg.Warnings {
+				if strings.Contains(w, "too wide") && strings.Contains(w, tc.entry) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected 'too wide' warning for %q; got %v", tc.entry, cfg.Warnings)
+			}
+		})
+	}
+}
+
+// TestParseTrustedProxyCIDRs_4in6AcceptedAtMinimum asserts that a 4in6 prefix
+// whose normalized v4 mask is exactly /8 (the minimum) is accepted normally.
+// ::ffff:10.0.0.0/104 normalizes to 10.0.0.0/8.
+func TestParseTrustedProxyCIDRs_4in6AcceptedAtMinimum(t *testing.T) {
+	t.Setenv("DEV_MODE", "true")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "::ffff:10.0.0.0/104")
+
+	cfg := config.Load()
+	if len(cfg.TrustedProxyCIDRs) != 1 {
+		t.Fatalf("expected 1 prefix for /8-normalized 4in6 entry; got %d (%v)", len(cfg.TrustedProxyCIDRs), cfg.TrustedProxyCIDRs)
+	}
+	// Must contain 10.x.x.x addresses.
+	target := netip.MustParseAddr("10.0.0.5")
+	if !cfg.TrustedProxyCIDRs[0].Contains(target) {
+		t.Fatalf("normalized prefix %v should contain 10.0.0.5", cfg.TrustedProxyCIDRs[0])
+	}
+	// Must NOT emit a "too wide" warning.
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "too wide") {
+			t.Fatalf("minimum-mask 4in6 prefix should not trigger 'too wide' warning; got %q", w)
+		}
+	}
+}
+
 // TestParseTrustedProxyCIDRs_4in6PrefixTooWide asserts that a 4in6 prefix
 // whose bit-length is less than 96 (so subtracting 96 would yield a negative
 // IPv4 prefix length) is dropped with a distinct warning.

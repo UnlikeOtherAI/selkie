@@ -126,10 +126,21 @@ func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 		// canonical IPv4 form so they line up with unmapped candidate IPs in
 		// the trust check. Without this, Contains is family-strict and a
 		// 4in6-configured trusted CIDR silently stops matching any peer.
+		//
+		// Guard against degenerate masks: ::ffff:0.0.0.0/96 normalizes to
+		// 0.0.0.0/0, which trusts the entire public internet. Refuse any
+		// 4in6 prefix whose normalized v4 mask is shorter than /8 — anything
+		// wider than a single class-A block is almost certainly a typo and
+		// would create a silent security hole.
+		const minNormalized4in6Bits = 8
 		if prefix.Addr().Is4In6() {
 			bits := prefix.Bits() - 96
 			if bits < 0 {
 				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring 4in6 prefix %q with bits<96; use the canonical IPv4 form", entry))
+				continue
+			}
+			if bits < minNormalized4in6Bits {
+				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing 4in6 prefix %q; normalized v4 mask /%d trusts too wide a range (min /%d)", entry, bits, minNormalized4in6Bits))
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: 4in6 prefix %q normalized to canonical IPv4 form; configure the IPv4 CIDR directly to silence this warning", entry))

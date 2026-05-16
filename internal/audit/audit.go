@@ -84,6 +84,17 @@ func (l *Logger) Log(ctx context.Context, evt Event) error {
 	return nil
 }
 
+var (
+	// v4Broadcast is the IPv4 limited-broadcast address (255.255.255.255).
+	// Hoisted here so it is allocated once rather than on every XFF walk.
+	v4Broadcast = netip.MustParseAddr("255.255.255.255")
+
+	// ipv6SiteLocal is the deprecated site-local IPv6 unicast range fec0::/10
+	// (RFC 3879). These addresses return IsGlobalUnicast=true and slip past
+	// the standard bogus-class checks; they must be caught explicitly.
+	ipv6SiteLocal = netip.MustParsePrefix("fec0::/10")
+)
+
 // ClientIP extracts the originating client IP from an HTTP request.
 //
 // The immediate peer (r.RemoteAddr) is the only address the server can verify.
@@ -144,13 +155,14 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 		}
 		// Reject addresses that cannot belong to a real client: unspecified
 		// (0.0.0.0 / ::), multicast (224.0.0.0/4, ff00::/8), link-local
-		// unicast (169.254.0.0/16, fe80::/10), and the IPv4 limited broadcast
-		// (255.255.255.255). Any of these in an XFF header is either a
+		// unicast (169.254.0.0/16, fe80::/10), the IPv4 limited broadcast
+		// (255.255.255.255), and the deprecated IPv6 site-local range
+		// (fec0::/10, RFC 3879). Any of these in an XFF header is either a
 		// misconfiguration or an attempt to pin callers onto a shared
 		// rate-limit bucket / pollute audit rows. Treat as unparseable and
 		// fall back to the peer.
-		v4Broadcast := netip.MustParseAddr("255.255.255.255")
-		if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr == v4Broadcast {
+		if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() ||
+			addr == v4Broadcast || ipv6SiteLocal.Contains(addr) {
 			return peer.Unmap().String()
 		}
 		if ipInPrefixes(addr, trusted) {
