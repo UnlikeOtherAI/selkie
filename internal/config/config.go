@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"strconv"
@@ -41,10 +42,27 @@ type Config struct {
 	OPAEndpoint              string
 	DevMode                  bool
 	TrustedProxyCIDRs        []netip.Prefix
+	// Warnings collects non-fatal configuration issues surfaced during
+	// Load() so callers can emit them through their structured logger
+	// (Load() itself runs before the logger is built). Treat each entry
+	// as a high-severity warning.
+	Warnings []string
 }
 
 // Load reads all configuration from environment variables with sensible defaults.
 func Load() Config {
+	trustedRaw := os.Getenv("TRUSTED_PROXY_CIDRS")
+	trusted, trustedWarnings := parseTrustedProxyCIDRs(trustedRaw)
+	devMode := getenvBool("DEV_MODE", false)
+	warnings := trustedWarnings
+	if len(trusted) == 0 && !devMode {
+		// Forgotten TRUSTED_PROXY_CIDRS in production collapses every
+		// request onto Caddy's loopback peer, producing a universal
+		// rate-limit bucket and a trivial DoS surface. Refuse to start
+		// rather than silently misbehave; the operator must opt into
+		// "no trusted proxies" by setting DEV_MODE=true.
+		panic("config: TRUSTED_PROXY_CIDRS is empty and DEV_MODE=false; refusing to start (set TRUSTED_PROXY_CIDRS to your edge proxy CIDR or DEV_MODE=true for local dev)")
+	}
 	return Config{
 		UOABaseURL:               os.Getenv("UOA_BASE_URL"),
 		UOADomain:                os.Getenv("UOA_DOMAIN"),
@@ -75,21 +93,25 @@ func Load() Config {
 		LogLevel:                 getenv("LOG_LEVEL", "info"),
 		OTELExporterOTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OPAEndpoint:              os.Getenv("OPA_ENDPOINT"),
-		DevMode:                  getenvBool("DEV_MODE", false),
-		TrustedProxyCIDRs:        parseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS")),
+		DevMode:                  devMode,
+		TrustedProxyCIDRs:        trusted,
+		Warnings:                 warnings,
 	}
 }
 
 // parseTrustedProxyCIDRs parses a comma-separated list of CIDR blocks. Invalid
-// entries are silently dropped so a misconfigured value cannot cause the server
-// to start trusting arbitrary proxies; the result is the conservative subset
-// that parsed cleanly.
-func parseTrustedProxyCIDRs(raw string) []netip.Prefix {
+// entries are dropped from the returned slice (so a misconfigured value cannot
+// cause the server to start trusting arbitrary proxies) but each parse failure
+// is surfaced via the returned warnings so the caller can log it — silently
+// discarding entries makes "all my CIDRs are typos" indistinguishable from
+// "no XFF trust intended" at runtime.
+func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 	if strings.TrimSpace(raw) == "" {
-		return nil
+		return nil, nil
 	}
 	parts := strings.Split(raw, ",")
 	prefixes := make([]netip.Prefix, 0, len(parts))
+	var warnings []string
 	for _, part := range parts {
 		entry := strings.TrimSpace(part)
 		if entry == "" {
@@ -97,11 +119,12 @@ func parseTrustedProxyCIDRs(raw string) []netip.Prefix {
 		}
 		prefix, err := netip.ParsePrefix(entry)
 		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring invalid entry %q: %v", entry, err))
 			continue
 		}
 		prefixes = append(prefixes, prefix)
 	}
-	return prefixes
+	return prefixes, warnings
 }
 
 func getenv(key, fallback string) string {

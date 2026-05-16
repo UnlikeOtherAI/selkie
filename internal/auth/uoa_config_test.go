@@ -83,6 +83,7 @@ func TestServeUOAConfigIncomplete(t *testing.T) {
 }
 
 func TestBuildAuthURLUsesConfigURL(t *testing.T) {
+	t.Setenv("DEV_MODE", "true") // config.Load() panics if TRUSTED_PROXY_CIDRS empty in non-dev
 	t.Setenv("UOA_BASE_URL", "https://authentication.unlikeotherai.com")
 	t.Setenv("UOA_CONFIG_URL", "https://api.selkie.live/auth/uoa-config")
 	t.Setenv("UOA_REDIRECT_URL", "https://admin.selkie.live/auth/callback")
@@ -133,6 +134,7 @@ func TestExchangeCodeUsesDocumentedAuthTokenContract(t *testing.T) {
 	}))
 	defer server.Close()
 
+	t.Setenv("DEV_MODE", "true") // config.Load() panics if TRUSTED_PROXY_CIDRS empty in non-dev
 	t.Setenv("UOA_BASE_URL", server.URL)
 	t.Setenv("UOA_CONFIG_URL", configURL)
 	t.Setenv("UOA_DOMAIN", "admin.selkie.live")

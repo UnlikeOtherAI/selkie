@@ -40,6 +40,10 @@ func main() {
 	logger := buildLogger(cfg.LogLevel)
 	defer logger.Sync() //nolint:errcheck // best-effort flush on exit
 
+	for _, w := range cfg.Warnings {
+		logger.Warn("config warning", zap.String("warning", w))
+	}
+
 	ctx := context.Background()
 	if err := runServe(ctx, cfg, logger); err != nil {
 		logger.Fatal("server exited with error", zap.Error(err))

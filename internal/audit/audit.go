@@ -91,8 +91,21 @@ func (l *Logger) Log(ctx context.Context, evt Event) error {
 // trusted proxy CIDRs; otherwise the header is ignored to prevent untrusted
 // clients from forging arbitrary IPs (e.g. for rate-limit key evasion).
 //
+// When the peer is trusted, the XFF list is walked right-to-left and the
+// first non-trusted (i.e. not inside a trusted prefix) IP is returned. This
+// mirrors the canonical "rightmost-non-trusted" algorithm and is safe even
+// when an upstream proxy (e.g. Caddy with default reverse_proxy semantics)
+// appends the real peer to a client-supplied XFF rather than overwriting it.
+// If every entry in the XFF list is itself trusted (chained trusted proxies)
+// or unparseable, the immediate peer is returned.
+//
+// All XFF header instances are concatenated (Header.Values), so requests
+// using Header.Add to produce multiple X-Forwarded-For lines are handled
+// equivalently to a single comma-separated header.
+//
 // Returns the peer IP as a fallback when XFF is missing, malformed, or
-// untrusted, and an empty string only when r.RemoteAddr itself is unparseable.
+// fully trusted, and an empty string only when r.RemoteAddr itself is
+// unparseable.
 func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 	peer := peerIP(r.RemoteAddr)
 	if !peer.IsValid() {
@@ -101,19 +114,34 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 	if !ipInPrefixes(peer, trusted) {
 		return peer.String()
 	}
-	fwd := r.Header.Get("X-Forwarded-For")
-	if fwd == "" {
+	values := r.Header.Values("X-Forwarded-For")
+	if len(values) == 0 {
 		return peer.String()
 	}
-	leftmost := strings.TrimSpace(strings.Split(fwd, ",")[0])
-	if leftmost == "" {
-		return peer.String()
+	joined := strings.Join(values, ",")
+	parts := strings.Split(joined, ",")
+	// Walk right-to-left: skip trusted-prefix entries (chained trusted
+	// proxies, including a Caddy-appended peer IP) and return the first
+	// non-trusted address encountered. This rejects an attacker-controlled
+	// leftmost value when one or more trusted hops sit to its right.
+	for i := len(parts) - 1; i >= 0; i-- {
+		entry := strings.TrimSpace(parts[i])
+		if entry == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			// Unparseable hop in an otherwise trusted chain: fall back to
+			// the peer rather than trusting anything to its left.
+			return peer.String()
+		}
+		if ipInPrefixes(addr, trusted) {
+			continue
+		}
+		return addr.String()
 	}
-	forwarded, err := netip.ParseAddr(leftmost)
-	if err != nil {
-		return peer.String()
-	}
-	return forwarded.String()
+	// Entire chain is trusted (or empty after trimming).
+	return peer.String()
 }
 
 func peerIP(remoteAddr string) netip.Addr {
