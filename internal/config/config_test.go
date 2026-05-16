@@ -14,8 +14,13 @@ func TestValidate(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name: "empty redis url is allowed",
-			cfg:  config.Config{RedisURL: ""},
+			name:    "empty redis url in prod is rejected",
+			cfg:     config.Config{RedisURL: "", DevMode: false},
+			wantErr: config.ErrMissingRedisURL,
+		},
+		{
+			name: "empty redis url in dev is allowed",
+			cfg:  config.Config{RedisURL: "", DevMode: true},
 		},
 		{
 			name:    "redis url without password in prod is rejected",

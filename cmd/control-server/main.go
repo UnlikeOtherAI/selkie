@@ -83,7 +83,12 @@ func runServe(ctx context.Context, cfg config.Config, logger *zap.Logger) error 
 		logger.Warn("redis disabled (REDIS_URL not set), SSE fan-out unavailable")
 	}
 
-	limiter := ratelimit.NewRedisLimiter(rdb.Client)
+	// Validate() guarantees rdb is non-nil in non-dev mode; in dev mode we
+	// leave limiter nil and downstream handlers respond 503 when invoked.
+	var limiter ratelimit.Limiter
+	if rdb != nil {
+		limiter = ratelimit.NewRedisLimiter(rdb.Client)
+	}
 
 	var overlayAlloc *overlay.Allocator
 	if cfg.WGOverlayCIDR != "" {
