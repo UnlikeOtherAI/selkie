@@ -13,14 +13,13 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    network_mode: host
     command:
       - /bin/sh
       - -lc
-      - exec redis-server --appendonly yes --bind 0.0.0.0 --protected-mode yes --requirepass "$${REDIS_PASSWORD}"
+      - exec redis-server --appendonly yes --bind 127.0.0.1 --protected-mode yes --requirepass "$${REDIS_PASSWORD}"
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
