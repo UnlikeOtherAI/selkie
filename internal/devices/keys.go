@@ -81,7 +81,7 @@ func (h *Handler) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 			Outcome:     "success",
 			TargetTable: "device_keys",
 			TargetID:    &deviceID,
-			RemoteIP:    audit.RemoteAddr(r),
+			RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 			UserAgent:   r.UserAgent(),
 		}); auditErr != nil {
 			h.logger.Error("audit device.key_rotate", zap.Error(auditErr))

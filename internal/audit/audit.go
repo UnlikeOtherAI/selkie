@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/unlikeotherai/selkie/internal/store"
@@ -83,16 +84,57 @@ func (l *Logger) Log(ctx context.Context, evt Event) error {
 	return nil
 }
 
-// RemoteAddr extracts the client IP from an HTTP request, preferring X-Forwarded-For.
-func RemoteAddr(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.Split(fwd, ",")[0]
+// ClientIP extracts the originating client IP from an HTTP request.
+//
+// The immediate peer (r.RemoteAddr) is the only address the server can verify.
+// X-Forwarded-For is only honored when the peer falls inside one of the
+// trusted proxy CIDRs; otherwise the header is ignored to prevent untrusted
+// clients from forging arbitrary IPs (e.g. for rate-limit key evasion).
+//
+// Returns the peer IP as a fallback when XFF is missing, malformed, or
+// untrusted, and an empty string only when r.RemoteAddr itself is unparseable.
+func ClientIP(r *http.Request, trusted []netip.Prefix) string {
+	peer := peerIP(r.RemoteAddr)
+	if !peer.IsValid() {
+		return ""
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if !ipInPrefixes(peer, trusted) {
+		return peer.String()
+	}
+	fwd := r.Header.Get("X-Forwarded-For")
+	if fwd == "" {
+		return peer.String()
+	}
+	leftmost := strings.TrimSpace(strings.Split(fwd, ",")[0])
+	if leftmost == "" {
+		return peer.String()
+	}
+	forwarded, err := netip.ParseAddr(leftmost)
 	if err != nil {
-		return r.RemoteAddr
+		return peer.String()
 	}
-	return host
+	return forwarded.String()
+}
+
+func peerIP(remoteAddr string) netip.Addr {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return addr
+}
+
+func ipInPrefixes(ip netip.Addr, prefixes []netip.Prefix) bool {
+	for _, p := range prefixes {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // nullIfEmpty returns nil for empty strings so Postgres receives NULL for inet columns.

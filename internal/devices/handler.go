@@ -109,7 +109,7 @@ func (h *Handler) handlePairStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.allowRateLimit(r.Context(), w, ratelimit.Key("devices", "pair", "start", "ip", audit.RemoteAddr(r)), pairStartLimit, pairStartWindow) {
+	if !h.allowRateLimit(r.Context(), w, ratelimit.Key("devices", "pair", "start", "ip", audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)), pairStartLimit, pairStartWindow) {
 		return
 	}
 
@@ -357,7 +357,7 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 			Outcome:     "success",
 			TargetTable: "devices",
 			TargetID:    &deviceID,
-			RemoteIP:    audit.RemoteAddr(r),
+			RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 			UserAgent:   r.UserAgent(),
 		}); auditErr != nil {
 			h.logger.Error("audit device.revoke", zap.Error(auditErr))

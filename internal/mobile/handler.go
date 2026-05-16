@@ -182,7 +182,7 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 			Outcome:     "info",
 			TargetTable: "users",
 			TargetID:    nil,
-			RemoteIP:    audit.RemoteAddr(r),
+			RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 			UserAgent:   r.UserAgent(),
 		}); auditErr != nil {
 			h.logger.Error("audit mobile disconnect", zap.Error(auditErr))

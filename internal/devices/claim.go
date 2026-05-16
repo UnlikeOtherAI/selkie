@@ -66,7 +66,7 @@ func (h *Handler) pairClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceIP := audit.RemoteAddr(r)
+	sourceIP := audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)
 	if !h.allowPairClaim(ctx, w, sourceIP, code) {
 		return
 	}
