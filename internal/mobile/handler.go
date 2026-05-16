@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,19 +28,39 @@ type HubSyncer interface {
 	SyncDevice(ctx context.Context, deviceID string) error
 }
 
+// auditLogger is the subset of audit.Logger used by this package.
+// Defined as an interface so tests can inject a spy without a live DB.
+type auditLogger interface {
+	Log(ctx context.Context, evt audit.Event) error
+}
+
+// mobileDeviceDisconnector revokes a user's mobile devices and retires their
+// active WireGuard key rows. It exists as an interface so the HTTP handler can
+// be exercised without a live database.
+type mobileDeviceDisconnector interface {
+	DisconnectMobileDevices(ctx context.Context, userID string) ([]string, error)
+}
+
 const (
 	mobileEnrollLimit  = 10
 	mobileEnrollWindow = time.Minute
+	// mobileDisconnectLimit is intentionally tight: each call retires every
+	// active mobile device for the user, so a stolen JWT must not be able to
+	// burst-revoke. Future work: take a `device_id` body param and make this
+	// endpoint per-device, then this limit can relax.
+	mobileDisconnectLimit  = 1
+	mobileDisconnectWindow = time.Minute
 )
 
 type Handler struct {
-	db      *store.DB
-	logger  *zap.Logger
-	cfg     config.Config
-	overlay *overlay.Allocator
-	audit   *audit.Logger
-	hub     HubSyncer
-	limiter ratelimit.Limiter
+	db           *store.DB
+	logger       *zap.Logger
+	cfg          config.Config
+	overlay      *overlay.Allocator
+	audit        auditLogger
+	hub          HubSyncer
+	limiter      ratelimit.Limiter
+	disconnector mobileDeviceDisconnector
 }
 
 type enrollRequest struct {
@@ -69,7 +90,15 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor, hub: hub, limiter: limiter}
+	h := &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, hub: hub, limiter: limiter}
+	// Preserve nil-ability: a nil *audit.Logger assigned directly to the
+	// auditLogger interface would produce a non-nil interface holding a nil
+	// pointer, defeating the h.audit == nil guard in auditMobileDisconnect.
+	if auditor != nil {
+		h.audit = auditor
+	}
+	h.disconnector = pgDisconnector{db: db}
+	return h
 }
 
 func (h *Handler) Mount(r chi.Router) {
@@ -108,11 +137,28 @@ func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	h.auditMobileEnroll(ctx, r, claims.Sub, deviceID)
 
+	h.writeMobileEnrollSuccess(w, deviceID, claims.Sub, overlayIP)
+}
+
+// writeMobileEnrollSuccess renders the WireGuard config for the freshly
+// enrolled device and writes the success response. It returns false (after
+// writing an error response) when the overlay IP is missing or the WireGuard
+// config cannot be rendered.
+func (h *Handler) writeMobileEnrollSuccess(w http.ResponseWriter, deviceID, userID string, overlayIP *string) bool {
+	if overlayIP == nil {
+		h.logger.Error("mobile enroll missing overlay allocation",
+			zap.String("device_id", deviceID),
+			zap.String("user_id", userID),
+		)
+		writeError(w, http.StatusServiceUnavailable, "overlay not allocated")
+		return false
+	}
+
 	wgConfig, renderErr := h.renderMobileWGConfig(*overlayIP)
 	if renderErr != nil {
 		h.logger.Error("render mobile wireguard config", zap.Error(renderErr), zap.String("device_id", deviceID))
 		writeError(w, http.StatusInternalServerError, "failed to build wireguard config")
-		return
+		return false
 	}
 
 	writeJSON(w, http.StatusOK, enrollResponse{
@@ -120,6 +166,7 @@ func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		OverlayIP: overlayIP,
 		WGConfig:  wgConfig,
 	})
+	return true
 }
 
 func (h *Handler) handleListServers(w http.ResponseWriter, r *http.Request) {
@@ -175,21 +222,93 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.audit != nil {
-		if auditErr := h.audit.Log(r.Context(), audit.Event{
-			ActorUserID: &claims.Sub,
-			Action:      "mobile.disconnect",
-			Outcome:     "info",
-			TargetTable: "users",
-			TargetID:    nil,
-			RemoteIP:    audit.RemoteAddr(r),
-			UserAgent:   r.UserAgent(),
-		}); auditErr != nil {
-			h.logger.Error("audit mobile disconnect", zap.Error(auditErr))
+	if !h.allowRateLimit(r.Context(), w, ratelimit.Key("mobile", "disconnect", "user", claims.Sub), mobileDisconnectLimit, mobileDisconnectWindow) {
+		return
+	}
+	if h.disconnector == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	deviceIDs, err := h.disconnector.DisconnectMobileDevices(ctx, claims.Sub)
+	if err != nil {
+		h.logger.Error("disconnect mobile devices", zap.Error(err), zap.String("user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to disconnect mobile devices")
+		return
+	}
+
+	// A single SyncAll reconciles every retired device in one pass — loading
+	// peers per-device fans out to N full reconciliations because retired
+	// devices no longer match the `status='active'` filter in loadPeer.
+	//
+	// The DB commit has already happened by the time we get here, so we cannot
+	// roll the revocation back. There is no periodic reconcile in this
+	// codebase (SyncAll only runs at hub Init / enroll / disconnect / key
+	// rotation), so a sync failure leaves the wireguard hub still routing for
+	// devices that are revoked in the database. Surface 503 so the client
+	// retries — the next attempt rate-limit-permitting will rerun SyncAll
+	// because the handler no longer short-circuits on empty deviceIDs (SyncAll
+	// is idempotent: it reconciles based on current DB state, removing peers
+	// for any retired device_keys row).
+	// Client should retry after the rate-limit window (1/min); SyncAll re-runs
+	// because the handler no longer short-circuits on empty deviceIDs.
+	if h.hub != nil {
+		if syncErr := h.hub.SyncAll(ctx); syncErr != nil {
+			h.logger.Error("sync wireguard hub after mobile disconnect", zap.Error(syncErr), zap.Int("device_count", len(deviceIDs)))
+			// audit_events.outcome CHECK enum: success | failure | allow | deny | info
+			// (migrations/001_initial.sql:285). Use metadata for finer-grained reasons.
+			h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs, "failure", syncErr)
+			w.Header().Set("Retry-After", strconv.Itoa(int(mobileDisconnectWindow.Seconds())))
+			writeError(w, http.StatusServiceUnavailable, "device revoked in database but wireguard sync failed; retry to fully tear down")
+			return
 		}
 	}
 
+	h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs, "", nil)
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// auditMobileDisconnect records a mobile.disconnect audit event.
+// outcomeOverride, when non-empty, takes precedence over the len-based default
+// ("success" when devices were found, "info" when none). syncErr, when
+// non-nil, is truncated to 200 chars and added to the audit metadata so the
+// failure is visible without polluting logs with full stack traces.
+func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, userID string, deviceIDs []string, outcomeOverride string, syncErr error) {
+	if h.audit == nil {
+		return
+	}
+	metadata := map[string]any{"device_ids": deviceIDs, "device_count": len(deviceIDs)}
+	outcome := "success"
+	if len(deviceIDs) == 0 {
+		outcome = "info"
+	}
+	if outcomeOverride != "" {
+		outcome = outcomeOverride
+		metadata["failure_reason"] = "wg_sync_failed"
+	}
+	if syncErr != nil {
+		msg := syncErr.Error()
+		if len(msg) > 200 {
+			msg = strings.ToValidUTF8(msg[:200], "")
+		}
+		metadata["sync_error"] = msg
+	}
+	if auditErr := h.audit.Log(ctx, audit.Event{
+		ActorUserID: &userID,
+		Action:      "mobile.disconnect",
+		Outcome:     outcome,
+		TargetTable: "devices",
+		TargetID:    nil,
+		RemoteIP:    audit.RemoteAddr(r),
+		UserAgent:   r.UserAgent(),
+		Metadata:    metadata,
+	}); auditErr != nil {
+		h.logger.Error("audit mobile disconnect", zap.Error(auditErr))
+	}
 }
 
 func (h *Handler) renderMobileWGConfig(deviceOverlayIP string) (string, error) {
