@@ -10,25 +10,23 @@
   }
 }
 
-(selkie_edge) {
+# Shared edge concerns: HSTS, anti-MIME-sniff, encoding, reverse-proxy
+# wiring. Headers that only make sense for an HTML origin (CSP, COOP/COEP,
+# X-Frame-Options, Permissions-Policy) live in selkie_admin_headers and are
+# applied only to the admin host. Applying COEP=require-corp +
+# CORP=same-origin to the JSON API host blocks the admin SPA from reading
+# cross-origin API responses in a browser.
+(selkie_edge_common) {
   encode zstd gzip
 
   header {
     # HSTS without `preload` until the domain is actually submitted to the
     # browser preload list — claiming preload without registration is a
-    # footgun if the cert ever lapses on a subdomain.
+    # footgun if the cert ever lapses on a subdomain. See docs/security.md
+    # for the current submission status.
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    # Self-host fonts (the admin UI must drop Google Fonts dependencies in
-    # its build pipeline). Removing fonts.googleapis.com / fonts.gstatic.com
-    # from CSP closes a future-XSS exfiltration vector through query params.
-    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
     Referrer-Policy "no-referrer"
     X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-    Cross-Origin-Opener-Policy "same-origin"
-    Cross-Origin-Embedder-Policy "require-corp"
-    Cross-Origin-Resource-Policy "same-origin"
-    Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()"
   }
 
   @device_events path_regexp device_events ^/api/v1/devices/[^/]+/events$
@@ -44,10 +42,39 @@
   }
 }
 
+# Admin-host browser hardening. IBM Plex is self-hosted via @fontsource
+# (admin-ui/src/main.tsx), so fonts.googleapis.com is no longer in
+# style-src/font-src. The user avatar is loaded with crossorigin="anonymous"
+# from *.googleusercontent.com, which satisfies COEP=require-corp via CORS.
+# interest-cohort=() omitted: FLoC was retired in 2023; modern Chromium
+# uses Topics API, which would be opted-out via browsing-topics=() if needed.
+(selkie_admin_headers) {
+  header {
+    Content-Security-Policy "default-src 'self'; img-src 'self' data: https://*.googleusercontent.com; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    X-Frame-Options "DENY"
+    Cross-Origin-Opener-Policy "same-origin"
+    Cross-Origin-Embedder-Policy "require-corp"
+    Cross-Origin-Resource-Policy "same-origin"
+    Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+  }
+}
+
+# API-host headers: the JSON API serves no HTML so CSP/COOP/COEP have no
+# document to isolate. CORP=cross-origin lets the admin SPA on a different
+# host read API responses while still preventing accidental data inclusion
+# via <script src=…>.
+(selkie_api_headers) {
+  header {
+    Cross-Origin-Resource-Policy "cross-origin"
+  }
+}
+
 {$ADMIN_HOST} {
-  import selkie_edge
+  import selkie_edge_common
+  import selkie_admin_headers
 }
 
 {$API_HOST} {
-  import selkie_edge
+  import selkie_edge_common
+  import selkie_api_headers
 }

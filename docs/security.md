@@ -162,7 +162,12 @@ Content-Security-Policy:
 
 - All control-plane traffic is HTTPS only.
 - Caddy terminates TLS; the Go server is private behind it.
-- HSTS is enabled in production.
+- HSTS is enabled in production (`max-age=31536000; includeSubDomains`).
+  `preload` is intentionally **not** advertised: the directive is a one-way
+  commitment to the browser preload list and must only be added after the
+  domain is stable, all subdomains serve HTTPS, and an explicit submission to
+  https://hstspreload.org has been planned. Removing `preload` later is slow
+  and partial. Adding it is a deliberate operational decision, not a default.
 - Self-signed certificates are rejected by default. Development-only bypasses
   must be explicit and CLI-scoped.
 

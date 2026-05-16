@@ -30,7 +30,7 @@ func newProtectedRouter(extraMW ...func(http.Handler) http.Handler) http.Handler
 	r := chi.NewRouter()
 	cfg := config.Config{InternalSessionSecret: middlewareTestSecret}
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(cfg, nil))
+		r.Use(auth.Middleware(cfg, nil, nil))
 		for _, mw := range extraMW {
 			r.Use(mw)
 		}

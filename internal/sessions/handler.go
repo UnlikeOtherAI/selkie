@@ -53,7 +53,7 @@ func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config, 
 // Mount registers session routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg, h.audit))
+		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/sessions", h.handleCreateSession)
 		r.Post("/api/v1/sessions/{id}/candidates", h.handleSessionCandidates)

@@ -152,6 +152,8 @@ export function Sidebar({ claims }: { claims: JWTClaims | null }) {
               id="user-avatar"
               src={claims.picture}
               alt=""
+              crossOrigin="anonymous"
+              referrerPolicy="no-referrer"
               className="w-7 h-7 rounded-full shrink-0"
             />
           ) : (

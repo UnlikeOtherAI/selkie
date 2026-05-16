@@ -399,6 +399,10 @@ type jwtClaims struct {
 	jwt.RegisteredClaims
 }
 
+// TODO(replay-defense): tokens here are bearer-only with a 24h expiry. A stolen
+// JWT is valid until exp. Mitigating this requires a server-side session table
+// keyed on `jti` with a per-request lookup in auth.Middleware (or an explicit
+// revocation list). Tracked separately; not a regression introduced here.
 func (h *CallbackHandler) mintToken(userID string, isSuper bool, email, displayName, picture string, audience []string) (string, error) {
 	if len(audience) == 0 {
 		return "", errors.New("audience is required")

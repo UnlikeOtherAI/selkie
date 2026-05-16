@@ -48,14 +48,14 @@ func TestValidate_AcceptsStrongSecret(t *testing.T) {
 }
 
 func TestValidate_DevModeAllowsEmptySecret(t *testing.T) {
-	cfg := config.Config{DevMode: true, DevModeConfirmed: true}
+	cfg := config.ConfirmDevForTest(config.Config{DevMode: true}, true)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate err = %v, want nil in dev mode", err)
 	}
 }
 
 func TestValidate_DevModeWithoutConfirmRejected(t *testing.T) {
-	cfg := config.Config{DevMode: true, DevModeConfirmed: false}
+	cfg := config.Config{DevMode: true}
 	err := cfg.Validate()
 	if !errors.Is(err, config.ErrUnconfirmedDevMode) {
 		t.Fatalf("Validate err = %v, want ErrUnconfirmedDevMode", err)
@@ -63,6 +63,11 @@ func TestValidate_DevModeWithoutConfirmRejected(t *testing.T) {
 }
 
 func TestLoad_DevModeConfirmedCaptured(t *testing.T) {
+	// CONFIRM_DEV_MODE is intentionally narrowed to the literal string
+	// "true" (not strconv.ParseBool) so a security gate cannot be tripped
+	// by stray "1"/"t"/"TRUE" templates that an operator pasted without
+	// reading. Anything other than the exact word "true" leaves the gate
+	// closed and Validate returns ErrUnconfirmedDevMode.
 	cases := map[string]struct {
 		value         string
 		wantConfirmed bool
@@ -71,10 +76,11 @@ func TestLoad_DevModeConfirmedCaptured(t *testing.T) {
 		"empty":          {"", false},
 		"false":          {"false", false},
 		"non-boolean":    {"yes", false},
-		"numeric_one":    {"1", true},
+		"numeric_one":    {"1", false},
+		"lowercase_t":    {"t", false},
+		"uppercase_True": {"True", false},
+		"uppercase_TRUE": {"TRUE", false},
 		"explicit_true":  {"true", true},
-		"explicit_True":  {"True", true},
-		"explicit_TRUE":  {"TRUE", true},
 		"explicit_false": {"false", false},
 	}
 	for name, tc := range cases {
@@ -87,8 +93,8 @@ func TestLoad_DevModeConfirmedCaptured(t *testing.T) {
 				t.Setenv("CONFIRM_DEV_MODE", tc.value)
 			}
 			cfg := config.Load()
-			if cfg.DevModeConfirmed != tc.wantConfirmed {
-				t.Fatalf("DevModeConfirmed = %v, want %v (env %q)", cfg.DevModeConfirmed, tc.wantConfirmed, tc.value)
+			if got := config.DevModeConfirmedForTest(cfg); got != tc.wantConfirmed {
+				t.Fatalf("DevModeConfirmed = %v, want %v (env %q)", got, tc.wantConfirmed, tc.value)
 			}
 		})
 	}
@@ -107,7 +113,7 @@ func TestValidate_RedisRules(t *testing.T) {
 		},
 		{
 			name: "empty redis url in dev is allowed",
-			cfg:  config.Config{RedisURL: "", DevMode: true, DevModeConfirmed: true},
+			cfg:  config.ConfirmDevForTest(config.Config{RedisURL: "", DevMode: true}, true),
 		},
 		{
 			name:    "redis url without password in prod is rejected",
@@ -121,7 +127,7 @@ func TestValidate_RedisRules(t *testing.T) {
 		},
 		{
 			name: "redis url without password in dev is allowed",
-			cfg:  config.Config{RedisURL: "redis://127.0.0.1:6379/0", DevMode: true, DevModeConfirmed: true},
+			cfg:  config.ConfirmDevForTest(config.Config{RedisURL: "redis://127.0.0.1:6379/0", DevMode: true}, true),
 		},
 		{
 			name: "redis url with password is allowed",

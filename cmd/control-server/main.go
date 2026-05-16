@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -36,6 +37,17 @@ import (
 	"github.com/unlikeotherai/selkie/internal/wg"
 )
 
+// shutdownGrace bounds the graceful shutdown window. After this many seconds,
+// the second SIGTERM accelerator cancels the shutdown context to force-quit
+// in-flight connections.
+const shutdownGrace = 30 * time.Second
+
+// errSilentServeExit signals that srv.Serve returned without an error AND
+// without a SIGTERM having arrived. This should never happen unless the
+// process state was tampered with; surfacing it as an error prevents a
+// silent zero-exit when the listener vanishes on its own.
+var errSilentServeExit = errors.New("http server stopped accepting before shutdown signal")
+
 func main() {
 	cfg := config.Load()
 	logger := buildLogger(cfg.LogLevel)
@@ -54,14 +66,39 @@ func main() {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := runServe(sigCtx, cfg, logger); err != nil {
+	// Second-signal accelerator: signal.NotifyContext only cancels sigCtx
+	// once, so a second Ctrl-C or SIGTERM during the 30s shutdown drain
+	// would otherwise be a no-op. forceShutdown is closed on the second
+	// signal so runServe can cancel its shutdown context and force-quit.
+	forceShutdown := make(chan struct{})
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(ch)
+		// Wait for the first signal — that one is consumed by sigCtx,
+		// not by us. The second signal triggers the force-quit.
+		<-sigCtx.Done()
+		select {
+		case <-ch:
+			close(forceShutdown)
+		case <-time.After(2 * shutdownGrace):
+			// Process has exited cleanly via normal drain; never fired.
+		}
+	}()
+
+	if err := runServe(sigCtx, forceShutdown, cfg, logger); err != nil {
 		logger.Fatal("server exited with error", zap.Error(err))
 	}
 }
 
-func runServe(sigCtx context.Context, cfg config.Config, logger *zap.Logger) error {
-	ctx := context.Background()
-	// Initialize OpenTelemetry (noop when endpoint is empty).
+func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.Config, logger *zap.Logger) error {
+	// Thread sigCtx into every long-lived init call so SIGTERM during boot
+	// (slow migrations, wireguard hub setup) unblocks the boot path rather
+	// than waiting for k8s SIGKILL. A separate detached context is used
+	// only for shutdown-time cleanup (telemetry flush) where cancellation
+	// from the now-cancelled sigCtx would defeat the flush.
+	ctx := sigCtx
+
 	otelShutdown, err := telemetry.Init(ctx, telemetry.Config{
 		Endpoint:       cfg.OTELExporterOTLPEndpoint,
 		ServiceName:    "selkie-server",
@@ -70,7 +107,13 @@ func runServe(sigCtx context.Context, cfg config.Config, logger *zap.Logger) err
 	if err != nil {
 		return fmt.Errorf("init telemetry: %w", err)
 	}
-	defer otelShutdown(ctx) //nolint:errcheck // best-effort flush on exit
+	defer func() {
+		// Use a detached context so a cancelled sigCtx does not abort
+		// the otel exporter flush.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = otelShutdown(shutdownCtx)
+	}()
 
 	db, err := store.OpenDB(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -128,9 +171,18 @@ func runServe(sigCtx context.Context, cfg config.Config, logger *zap.Logger) err
 	// Policy engine (allow-all when OPA_ENDPOINT is empty).
 	policyEngine := policy.New(cfg.OPAEndpoint, logger)
 
-	// Coturn redis-statsdb subscriber for relay allocation tracking. Bound
-	// to sigCtx so SIGTERM unblocks the subscriber loop and stops in-flight
-	// Pool.Exec calls before db.Close runs in deferred order.
+	// statsWG tracks the coturn statsdb subscriber goroutine. It is
+	// registered BEFORE the db.Close defer so the LIFO unwind runs
+	// statsWG.Wait() first — waiting until statsSub.Run() has fully
+	// exited — and only then closes the database pool. Without this, a
+	// SIGTERM-during-Exec race would have statsClient.Close → rdb.Close
+	// → db.Close firing while the subscriber still holds an acquired
+	// pgx connection mid-Exec, leaving "closed pool" errors and racing
+	// pgx's internal pool state. The WaitGroup-defer ordering is the
+	// critical part: defer order is LIFO, so statsWG.Wait must be added
+	// AFTER db.Close to run BEFORE it.
+	var statsWG sync.WaitGroup
+	defer statsWG.Wait()
 	if cfg.CoturnRedisStatsDB != "" {
 		statsOpts, err := redis.ParseURL(cfg.CoturnRedisStatsDB)
 		if err != nil {
@@ -139,7 +191,11 @@ func runServe(sigCtx context.Context, cfg config.Config, logger *zap.Logger) err
 		statsClient := redis.NewClient(statsOpts)
 		defer statsClient.Close()
 		statsSub := nat.NewStatsSubscriber(statsClient, db, logger)
-		go statsSub.Run(sigCtx)
+		statsWG.Add(1)
+		go func() {
+			defer statsWG.Done()
+			statsSub.Run(sigCtx)
+		}()
 		logger.Info("coturn statsdb subscriber started")
 	}
 
@@ -184,16 +240,20 @@ func runServe(sigCtx context.Context, cfg config.Config, logger *zap.Logger) err
 	auditor := audit.New(db, logger)
 
 	auth.NewCallbackHandler(db, cfg, auditor, logger, limiter).Mount(r)
-	admin.New(db, logger, cfg, auditor).Mount(r)
+	admin.New(db, logger, cfg, auditor, limiter).Mount(r)
 	devices.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
 	mobile.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
-	services.New(db, logger, cfg, auditor).Mount(r)
+	services.New(db, logger, cfg, auditor, limiter).Mount(r)
 	sessions.New(db, rdb, logger, cfg, policyEngine, limiter, auditor).Mount(r)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ServerPort),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound request headers to 16KiB. Default is 1MiB, which lets a
+		// crafted User-Agent bloat audit_events rows at attacker-chosen
+		// scale (see internal/auth.middleware reject-audit truncation).
+		MaxHeaderBytes: 16 << 10,
 	}
 
 	// Bind the listener synchronously so a bind failure surfaces as a boot
@@ -202,28 +262,55 @@ func runServe(sigCtx context.Context, cfg config.Config, logger *zap.Logger) err
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	// Resolve the actually-bound port BEFORE flipping ready — when
+	// ServerPort=0 the kernel assigns an ephemeral port and tests/operators
+	// need that real value, not the literal 0 from cfg.
+	boundPort := cfg.ServerPort
+	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+		boundPort = tcpAddr.Port
+	}
 	ready.Store(true)
-	logger.Info("listening", zap.Int("port", cfg.ServerPort))
+	logger.Info("listening", zap.Int("port", boundPort))
 
+	// serveErr distinguishes "clean shutdown initiated by SIGTERM" (nil)
+	// from "Serve returned spontaneously before shutdown" (errSilentServeExit).
+	// http.ErrServerClosed only occurs after srv.Shutdown, so seeing it on
+	// the goroutine path before sigCtx fires would mean a third party
+	// called srv.Close — that is a defect worth surfacing.
 	errCh := make(chan error, 1)
 	go func() {
-		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		serveErr := srv.Serve(ln)
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- serveErr
+			return
 		}
-		close(errCh)
+		errCh <- nil
 	}()
 
 	select {
-	case err := <-errCh:
-		return err
+	case serveErr := <-errCh:
+		if serveErr == nil {
+			return errSilentServeExit
+		}
+		return serveErr
 	case <-sigCtx.Done():
 	}
 
 	ready.Store(false)
 	logger.Info("shutting down")
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
+	// A second SIGTERM during the drain cancels shutCtx, escalating
+	// srv.Shutdown to a forced-close on in-flight connections.
+	go func() {
+		select {
+		case <-forceShutdown:
+			logger.Warn("second shutdown signal received, forcing close of in-flight connections")
+			cancel()
+		case <-shutCtx.Done():
+		}
+	}()
 	if err := srv.Shutdown(shutCtx); err != nil { //nolint:contextcheck // intentionally new context for graceful shutdown
 		return err
 	}

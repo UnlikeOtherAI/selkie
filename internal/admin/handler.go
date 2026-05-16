@@ -11,24 +11,26 @@ import (
 	"github.com/unlikeotherai/selkie/internal/audit"
 	"github.com/unlikeotherai/selkie/internal/auth"
 	"github.com/unlikeotherai/selkie/internal/config"
+	"github.com/unlikeotherai/selkie/internal/ratelimit"
 	"github.com/unlikeotherai/selkie/internal/store"
 	"go.uber.org/zap"
 )
 
 // Handler serves the admin dashboard, login HTML pages, and admin API endpoints.
 type Handler struct {
-	db     *store.DB
-	logger *zap.Logger
-	cfg    config.Config
-	audit  *audit.Logger
+	db      *store.DB
+	logger  *zap.Logger
+	cfg     config.Config
+	audit   *audit.Logger
+	limiter ratelimit.Limiter
 }
 
 // New creates a new admin Handler with the given dependencies.
-func New(db *store.DB, logger *zap.Logger, cfg config.Config, auditor *audit.Logger) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Handler{db: db, logger: logger, cfg: cfg, audit: auditor}
+	return &Handler{db: db, logger: logger, cfg: cfg, audit: auditor, limiter: limiter}
 }
 
 // Mount registers admin routes on the given router.
@@ -52,7 +54,7 @@ func (h *Handler) Mount(r chi.Router) {
 
 	// Admin API endpoints require auth and super-user status.
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg, h.audit))
+		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Get("/api/v1/audit", h.handleListAuditEvents)
 		r.Get("/api/v1/system/info", h.handleSystemInfo)

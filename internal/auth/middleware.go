@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/unlikeotherai/selkie/internal/audit"
 	"github.com/unlikeotherai/selkie/internal/config"
+	"github.com/unlikeotherai/selkie/internal/ratelimit"
 )
 
 // Issuer is the iss claim value Selkie embeds in every session token it mints.
@@ -24,6 +25,26 @@ const (
 
 // JWTLeeway is the clock skew tolerance applied when verifying session JWTs.
 const JWTLeeway = 30 * time.Second
+
+// rejectAuditLimit caps how many reject-audit rows a single peer IP can mint
+// per minute. The reject path runs BEFORE JWT verification succeeds, so
+// without this cap an unauthenticated burst of `Authorization: Bearer x`
+// becomes one audit_events INSERT per request — a DoS amplifier and an
+// audit-table poisoning vector. The cap is generous enough that legitimate
+// token-expiry retries always fit but tight enough that a credential-stuffing
+// flood degrades to "first N per minute, then dropped" rather than saturating
+// Postgres writes.
+const (
+	rejectAuditLimit  = 30
+	rejectAuditWindow = time.Minute
+	// rejectAuditTimeout bounds the audit write so a Postgres stall on the
+	// reject path cannot pile up goroutines proportional to the attack rate.
+	rejectAuditTimeout = 2 * time.Second
+	// maxAuditUserAgent caps the User-Agent length copied into the audit
+	// row. Go's default MaxHeaderBytes is 1MiB; without truncation a
+	// crafted UA can bloat the audit table by ~1MB/row at the attack rate.
+	maxAuditUserAgent = 512
+)
 
 // Claims holds the authenticated user identity extracted from a JWT.
 type Claims struct {
@@ -55,20 +76,36 @@ type sessionClaims struct {
 // injects Claims into context. When auditor is non-nil, every rejected
 // request emits an "auth.middleware.reject" audit row with the failure
 // reason so forensic queries can distinguish credential-stuffing from
-// expired tokens.
-func Middleware(cfg config.Config, auditor *audit.Logger) func(http.Handler) http.Handler {
+// expired tokens. When limiter is non-nil, reject-audit writes are gated
+// behind a per-peer-IP token bucket so an unauthenticated flood cannot
+// amplify into one DB write per request.
+func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter) func(http.Handler) http.Handler {
 	secret := []byte(cfg.InternalSessionSecret)
 	trusted := cfg.TrustedProxyCIDRs
 
 	reject := func(w http.ResponseWriter, r *http.Request, reason string) {
 		if auditor != nil {
-			_ = auditor.Log(r.Context(), audit.Event{
-				Action:    "auth.middleware.reject",
-				Outcome:   "deny",
-				RemoteIP:  audit.ClientIP(r, trusted),
-				UserAgent: r.UserAgent(),
-				Metadata:  map[string]any{"reason": reason},
-			})
+			ip := audit.ClientIP(r, trusted)
+			if shouldAuditReject(r.Context(), limiter, ip) {
+				ua := r.UserAgent()
+				if len(ua) > maxAuditUserAgent {
+					ua = ua[:maxAuditUserAgent]
+				}
+				// Detach from r.Context() so a client TCP-RST mid-write
+				// (typical credential-stuffer signature) cannot suppress
+				// the audit row — the most suspicious callers must still
+				// leave a forensic trail. Bound the write so a Postgres
+				// stall cannot pile up goroutines.
+				auditCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), rejectAuditTimeout)
+				defer cancel()
+				_ = auditor.Log(auditCtx, audit.Event{
+					Action:    "auth.middleware.reject",
+					Outcome:   "deny",
+					RemoteIP:  ip,
+					UserAgent: ua,
+					Metadata:  map[string]any{"reason": reason},
+				})
+			}
 		}
 		writeUnauthorized(w)
 	}
@@ -119,6 +156,23 @@ func Middleware(cfg config.Config, auditor *audit.Logger) func(http.Handler) htt
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// shouldAuditReject consults the rate limiter to decide whether the current
+// reject should produce an audit row. When the limiter is nil (dev mode
+// without Redis and without the memory fallback) or the resolved IP is empty
+// (unparseable peer — already a red flag) we always audit. Limiter errors
+// are treated as "always audit" rather than "always drop": a working audit
+// trail during a Redis outage beats silent attacker activity.
+func shouldAuditReject(ctx context.Context, limiter ratelimit.Limiter, ip string) bool {
+	if limiter == nil || ip == "" {
+		return true
+	}
+	decision, err := limiter.Allow(ctx, ratelimit.Key("auth", "reject", "ip", ip), rejectAuditLimit, rejectAuditWindow)
+	if err != nil {
+		return true
+	}
+	return decision.Allowed
 }
 
 // RequireAudience returns a middleware that rejects requests whose Claims do

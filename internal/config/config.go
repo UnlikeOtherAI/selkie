@@ -76,8 +76,13 @@ type Config struct {
 	OTELExporterOTLPEndpoint string
 	OPAEndpoint              string
 	DevMode                  bool
-	DevModeConfirmed         bool
-	TrustedProxyCIDRs        []netip.Prefix
+	// devModeConfirmed mirrors CONFIRM_DEV_MODE at Load() time. Unexported
+	// so a struct literal in test or alt-entrypoint code cannot bypass the
+	// env tripwire by setting Config{DevMode: true, DevModeConfirmed: true}.
+	// Validate consults this field; only Load() (or this package's own
+	// tests via setDevModeConfirmed) may set it.
+	devModeConfirmed  bool
+	TrustedProxyCIDRs []netip.Prefix
 	// Warnings collects non-fatal configuration issues surfaced during
 	// Load() so callers can emit them through their structured logger
 	// (Load() itself runs before the logger is built). Treat each entry
@@ -133,9 +138,13 @@ func Load() Config {
 		LogLevel:                 getenv("LOG_LEVEL", "info"),
 		OTELExporterOTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OPAEndpoint:              os.Getenv("OPA_ENDPOINT"),
-		DevMode:                  devMode,
-		DevModeConfirmed:         getenvBool("CONFIRM_DEV_MODE", false),
-		TrustedProxyCIDRs:        trusted,
+		DevMode: devMode,
+		// CONFIRM_DEV_MODE must be the literal string "true". Accepting
+		// ParseBool's wider set (1, t, T, TRUE, True) would silently widen
+		// a security gate that should require an unambiguous, human-typed
+		// acknowledgement.
+		devModeConfirmed:  os.Getenv("CONFIRM_DEV_MODE") == "true",
+		TrustedProxyCIDRs: trusted,
 		Warnings:                 warnings,
 	}
 }
@@ -279,7 +288,7 @@ func getenvInt(key string, fallback int) int {
 //     disables AUTH when the password is empty.
 func (c Config) Validate() error {
 	if c.DevMode {
-		if !c.DevModeConfirmed {
+		if !c.devModeConfirmed {
 			return ErrUnconfirmedDevMode
 		}
 	} else {
