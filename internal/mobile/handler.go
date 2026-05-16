@@ -237,30 +237,49 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	// rotation), so a sync failure leaves the wireguard hub still routing for
 	// devices that are revoked in the database. Surface 503 so the client
 	// retries — the next attempt rate-limit-permitting will rerun SyncAll
-	// (the DB rows are already revoked, so this is idempotent).
-	if h.hub != nil && len(deviceIDs) > 0 {
+	// because the handler no longer short-circuits on empty deviceIDs (SyncAll
+	// is idempotent: it reconciles based on current DB state, removing peers
+	// for any retired device_keys row).
+	// Client should retry after the rate-limit window (1/min); SyncAll re-runs
+	// because the handler no longer short-circuits on empty deviceIDs.
+	if h.hub != nil {
 		if syncErr := h.hub.SyncAll(ctx); syncErr != nil {
 			h.logger.Error("sync wireguard hub after mobile disconnect", zap.Error(syncErr), zap.Int("device_count", len(deviceIDs)))
-			h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs)
+			h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs, "sync_failed", syncErr)
 			writeError(w, http.StatusServiceUnavailable, "device revoked in database but wireguard sync failed; retry to fully tear down")
 			return
 		}
 	}
 
-	h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs)
+	h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs, "", nil)
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, userID string, deviceIDs []string) {
+// auditMobileDisconnect records a mobile.disconnect audit event.
+// outcomeOverride, when non-empty, takes precedence over the len-based default
+// ("success" when devices were found, "info" when none). syncErr, when
+// non-nil, is truncated to 200 chars and added to the audit metadata so the
+// failure is visible without polluting logs with full stack traces.
+func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, userID string, deviceIDs []string, outcomeOverride string, syncErr error) {
 	if h.audit == nil {
 		return
 	}
-	outcome := "success"
-	if len(deviceIDs) == 0 {
-		outcome = "info"
+	outcome := outcomeOverride
+	if outcome == "" {
+		outcome = "success"
+		if len(deviceIDs) == 0 {
+			outcome = "info"
+		}
 	}
 	metadata := map[string]any{"device_ids": deviceIDs, "device_count": len(deviceIDs)}
+	if syncErr != nil {
+		msg := syncErr.Error()
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		metadata["sync_error"] = msg
+	}
 	if auditErr := h.audit.Log(ctx, audit.Event{
 		ActorUserID: &userID,
 		Action:      "mobile.disconnect",

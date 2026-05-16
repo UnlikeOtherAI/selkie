@@ -467,9 +467,12 @@ func TestHandleDisconnectRetiresDevices(t *testing.T) {
 	}
 }
 
-// TestHandleDisconnectNoDevicesSkipsSync confirms that when the store
-// reports no active mobile devices, we do not pay for a hub reconciliation.
-func TestHandleDisconnectNoDevicesSkipsSync(t *testing.T) {
+// TestHandleDisconnectNoDevicesStillSyncs confirms that even when the store
+// reports no active mobile devices, SyncAll still runs — the retry contract
+// requires SyncAll on every disconnect call so a second call after a 503
+// (where the DB rows are already revoked and DisconnectMobileDevices returns
+// empty) still removes stale wireguard peers from the hub.
+func TestHandleDisconnectNoDevicesStillSyncs(t *testing.T) {
 	cfg := config.Config{InternalSessionSecret: "test-secret"}
 	hub := &fakeHub{}
 	disc := &fakeDisconnector{deviceIDs: nil}
@@ -491,8 +494,10 @@ func TestHandleDisconnectNoDevicesSkipsSync(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
-	if hub.syncAllCalls != 0 {
-		t.Fatalf("hub.SyncAll calls = %d, want 0", hub.syncAllCalls)
+	// SyncAll must fire even when no active devices remain — idempotent
+	// reconcile removes stale peers left from a prior failed sync.
+	if hub.syncAllCalls != 1 {
+		t.Fatalf("hub.SyncAll calls = %d, want 1", hub.syncAllCalls)
 	}
 }
 
@@ -637,6 +642,154 @@ func TestHandleDisconnectSyncFailureReturns503(t *testing.T) {
 	// Response body must carry retry guidance.
 	if !strings.Contains(rec.Body.String(), "retry to fully tear down") {
 		t.Fatalf("body missing retry guidance: %s", rec.Body.String())
+	}
+}
+
+// TestValidateWGPublicKey_RejectsZeroWithHighBit is the CRITICAL regression
+// test: the all-zeros identity with byte[31]=0x80 ("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA=")
+// was previously accepted because the map had no entry for that bit pattern.
+// After masking byte 31 to 0x7f before lookup it collapses to the all-zeros
+// entry and is correctly rejected.
+func TestValidateWGPublicKey_RejectsZeroWithHighBit(t *testing.T) {
+	t.Parallel()
+	const zeroHighBit = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA="
+	err := validateWGPublicKey(zeroHighBit)
+	if err == nil {
+		t.Fatalf("expected rejection for all-zeros+high-bit key, got nil")
+	}
+	var verr *enrollValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("expected *enrollValidationError, got %T (%v)", err, err)
+	}
+	if verr.Field != "wg_public_key" {
+		t.Fatalf("field = %q, want wg_public_key", verr.Field)
+	}
+	if !strings.Contains(verr.Reason, "low-order") {
+		t.Fatalf("reason = %q, want it to mention low-order", verr.Reason)
+	}
+}
+
+// TestValidateWGPublicKey_RejectsAllBasePointsWithHighBit verifies that every
+// known low-order base point with byte[31]|=0x80 is also rejected after the
+// RFC 7748 §5 high-bit mask is applied before the map lookup.
+func TestValidateWGPublicKey_RejectsAllBasePointsWithHighBit(t *testing.T) {
+	t.Parallel()
+	// Each pair is (low-bit canonical key, high-bit variant key).
+	cases := []struct {
+		name       string
+		lowBit     string
+		highBitKey string
+	}{
+		{
+			name:       "identity all-zeros",
+			lowBit:     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			highBitKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA=",
+		},
+		{
+			name:       "order2 one",
+			lowBit:     "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			highBitKey: "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA=",
+		},
+		{
+			name:       "order8 p1",
+			lowBit:     "4Ot6fDtBuK4WVuP68Z/EatoJjeucMrH9hmIFFl9JuAA=",
+			highBitKey: "4Ot6fDtBuK4WVuP68Z/EatoJjeucMrH9hmIFFl9JuIA=",
+		},
+		{
+			name:       "order8 p2",
+			lowBit:     "X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEVc=",
+			highBitKey: "X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEdc=",
+		},
+		{
+			name:       "p-1",
+			lowBit:     "7P///////////////////////////////////////38=",
+			highBitKey: "7P////////////////////////////////////////8=",
+		},
+		{
+			name:       "p",
+			lowBit:     "7f///////////////////////////////////////38=",
+			highBitKey: "7f////////////////////////////////////////8=",
+		},
+		{
+			name:       "p+1",
+			lowBit:     "7v///////////////////////////////////////38=",
+			highBitKey: "7v////////////////////////////////////////8=",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, key := range []string{tc.lowBit, tc.highBitKey} {
+				err := validateWGPublicKey(key)
+				if err == nil {
+					t.Fatalf("key %q: expected rejection, got nil", key)
+				}
+				var verr *enrollValidationError
+				if !errors.As(err, &verr) {
+					t.Fatalf("key %q: expected *enrollValidationError, got %T (%v)", key, err, err)
+				}
+				if verr.Field != "wg_public_key" {
+					t.Fatalf("key %q: field = %q, want wg_public_key", key, verr.Field)
+				}
+				if !strings.Contains(verr.Reason, "low-order") {
+					t.Fatalf("key %q: reason = %q, want it to mention low-order", key, verr.Reason)
+				}
+			}
+		})
+	}
+}
+
+// TestHandleDisconnect_RetryAfterSyncFailureReconciles exercises the retry
+// contract for Fix 2: after a 503 (first call with SyncAll failure), the DB
+// rows are already revoked; a second call returns no active deviceIDs but
+// must still invoke SyncAll to tear down stale wireguard peers.
+func TestHandleDisconnect_RetryAfterSyncFailureReconciles(t *testing.T) {
+	cfg := config.Config{InternalSessionSecret: "test-secret"}
+	syncSentinel := errors.New("hub unreachable")
+	hub := &fakeHub{syncAllErr: syncSentinel}
+
+	// First call: 1 active device; SyncAll fails → 503, DB rows revoked.
+	disc := &fakeDisconnectorWithStatus{deviceIDs: []string{"dev-retry"}}
+	h := New(nil, nil, cfg, nil, nil, hub, fakeLimiter{
+		decision: ratelimit.Decision{Allowed: true},
+	})
+	h.disconnector = disc
+
+	router := chi.NewRouter()
+	h.Mount(router)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
+	req1.Header.Set("Authorization", "Bearer "+signedToken(t, cfg.InternalSessionSecret, "user-retry"))
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first call: status = %d, want 503; body=%s", rec1.Code, rec1.Body.String())
+	}
+	if hub.syncAllCalls != 1 {
+		t.Fatalf("first call: hub.SyncAll calls = %d, want 1", hub.syncAllCalls)
+	}
+	if got := disc.rowStatus["dev-retry"]; got != "revoked" {
+		t.Fatalf("first call: device row status = %q, want revoked", got)
+	}
+
+	// Second call (retry): clear the sync error and use empty disconnector
+	// (simulates all rows already revoked — DisconnectMobileDevices returns []).
+	hub.syncAllErr = nil
+	emptyDisc := &fakeDisconnectorWithStatus{deviceIDs: nil}
+	h.disconnector = emptyDisc
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
+	req2.Header.Set("Authorization", "Bearer "+signedToken(t, cfg.InternalSessionSecret, "user-retry"))
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusNoContent {
+		t.Fatalf("second call (retry): status = %d, want 204; body=%s", rec2.Code, rec2.Body.String())
+	}
+	// SyncAll must have been called on the retry (total = 2 across both calls).
+	if hub.syncAllCalls != 2 {
+		t.Fatalf("second call (retry): hub.SyncAll total calls = %d, want 2", hub.syncAllCalls)
 	}
 }
 
