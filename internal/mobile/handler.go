@@ -35,9 +35,13 @@ type mobileDeviceDisconnector interface {
 }
 
 const (
-	mobileEnrollLimit      = 10
-	mobileEnrollWindow     = time.Minute
-	mobileDisconnectLimit  = 10
+	mobileEnrollLimit  = 10
+	mobileEnrollWindow = time.Minute
+	// mobileDisconnectLimit is intentionally tight: each call retires every
+	// active mobile device for the user, so a stolen JWT must not be able to
+	// burst-revoke. Future work: take a `device_id` body param and make this
+	// endpoint per-device, then this limit can relax.
+	mobileDisconnectLimit  = 1
 	mobileDisconnectWindow = time.Minute
 )
 
@@ -223,11 +227,12 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.hub != nil {
-		for _, deviceID := range deviceIDs {
-			if syncErr := h.hub.SyncDevice(ctx, deviceID); syncErr != nil {
-				h.logger.Error("sync mobile wireguard peer after disconnect", zap.Error(syncErr), zap.String("device_id", deviceID))
-			}
+	// A single SyncAll reconciles every retired device in one pass — loading
+	// peers per-device fans out to N full reconciliations because retired
+	// devices no longer match the `status='active'` filter in loadPeer.
+	if h.hub != nil && len(deviceIDs) > 0 {
+		if syncErr := h.hub.SyncAll(ctx); syncErr != nil {
+			h.logger.Error("sync wireguard hub after mobile disconnect", zap.Error(syncErr), zap.Int("device_count", len(deviceIDs)))
 		}
 	}
 

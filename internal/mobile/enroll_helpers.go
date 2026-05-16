@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/unlikeotherai/selkie/internal/audit"
@@ -17,10 +19,17 @@ import (
 
 const (
 	maxHostnameLen    = 253
+	maxDNSLabelLen    = 63
 	maxOSArchLen      = 64
 	maxAppVersionLen  = 64
 	wgPublicKeyRawLen = 32
 )
+
+// wgPublicKeyPattern enforces the OpenAPI contract for WireGuard public keys:
+// exactly 43 base64 chars (no `-`/`_` URL-safe variants, no whitespace) plus
+// the single trailing `=` pad. Standard library base64 decoding is too lenient
+// (e.g. accepts unpadded variants) for storage as a stable join key.
+var wgPublicKeyPattern = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 
 // enrollValidationError indicates a specific field of the enrollment request
 // failed validation. The bad value is intentionally not exposed.
@@ -43,6 +52,13 @@ func parseEnrollRequest(w http.ResponseWriter, r *http.Request) (enrollRequest, 
 		writeEnrollValidationError(w, err)
 		return enrollRequest{}, false
 	}
+	// Canonicalize fields after validation so downstream callers (DB upsert,
+	// hub join keys) always see the trimmed, lowercased values.
+	req.Hostname = strings.ToLower(strings.TrimSpace(req.Hostname))
+	req.OSPlatform = strings.TrimSpace(req.OSPlatform)
+	req.OSArch = strings.TrimSpace(req.OSArch)
+	req.AppVersion = strings.TrimSpace(req.AppVersion)
+	req.WGPublicKey = strings.TrimSpace(req.WGPublicKey)
 	return req, true
 }
 
@@ -60,61 +76,106 @@ func writeEnrollValidationError(w http.ResponseWriter, err error) {
 }
 
 func validateEnrollRequest(req enrollRequest) error {
-	hostname := strings.TrimSpace(req.Hostname)
+	if err := validateHostname(req.Hostname); err != nil {
+		return err
+	}
+	platform := strings.TrimSpace(req.OSPlatform)
+	if platform != "ios" && platform != "android" {
+		return &enrollValidationError{Field: "os_platform", Reason: "must be 'ios' or 'android'"}
+	}
+	if err := validateBoundedField("os_arch", req.OSArch, maxOSArchLen); err != nil {
+		return err
+	}
+	if err := validateBoundedField("app_version", req.AppVersion, maxAppVersionLen); err != nil {
+		return err
+	}
+	return validateWGPublicKey(req.WGPublicKey)
+}
+
+func validateHostname(raw string) error {
+	hostname := strings.ToLower(strings.TrimSpace(raw))
 	switch {
 	case hostname == "":
 		return &enrollValidationError{Field: "hostname", Reason: "required"}
 	case len(hostname) > maxHostnameLen:
 		return &enrollValidationError{Field: "hostname", Reason: "too long"}
-	case !isDNSSafe(hostname):
-		return &enrollValidationError{Field: "hostname", Reason: "must contain only letters, digits, '.' or '-'"}
+	case !isValidDNSName(hostname):
+		return &enrollValidationError{Field: "hostname", Reason: "must be a valid DNS name"}
 	}
-
-	platform := strings.TrimSpace(req.OSPlatform)
-	if platform != "ios" && platform != "android" {
-		return &enrollValidationError{Field: "os_platform", Reason: "must be 'ios' or 'android'"}
-	}
-
-	osArch := strings.TrimSpace(req.OSArch)
-	switch {
-	case osArch == "":
-		return &enrollValidationError{Field: "os_arch", Reason: "required"}
-	case len(osArch) > maxOSArchLen:
-		return &enrollValidationError{Field: "os_arch", Reason: "too long"}
-	}
-
-	appVersion := strings.TrimSpace(req.AppVersion)
-	switch {
-	case appVersion == "":
-		return &enrollValidationError{Field: "app_version", Reason: "required"}
-	case len(appVersion) > maxAppVersionLen:
-		return &enrollValidationError{Field: "app_version", Reason: "too long"}
-	}
-
-	wgKey := strings.TrimSpace(req.WGPublicKey)
-	if wgKey == "" {
-		return &enrollValidationError{Field: "wg_public_key", Reason: "required"}
-	}
-	raw, decodeErr := base64.StdEncoding.DecodeString(wgKey)
-	if decodeErr != nil || len(raw) != wgPublicKeyRawLen {
-		return &enrollValidationError{Field: "wg_public_key", Reason: "must be base64-encoded 32 bytes"}
-	}
-
 	return nil
 }
 
-func isDNSSafe(s string) bool {
-	for _, r := range s {
+func validateBoundedField(field, raw string, maxLen int) error {
+	v := strings.TrimSpace(raw)
+	switch {
+	case v == "":
+		return &enrollValidationError{Field: field, Reason: "required"}
+	case len(v) > maxLen:
+		return &enrollValidationError{Field: field, Reason: "too long"}
+	case containsControlChar(v):
+		return &enrollValidationError{Field: field, Reason: "must not contain control characters"}
+	}
+	return nil
+}
+
+func validateWGPublicKey(raw string) error {
+	wgKey := strings.TrimSpace(raw)
+	if wgKey == "" {
+		return &enrollValidationError{Field: "wg_public_key", Reason: "required"}
+	}
+	if !wgPublicKeyPattern.MatchString(wgKey) {
+		return &enrollValidationError{Field: "wg_public_key", Reason: "must be base64-encoded 32 bytes"}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(wgKey)
+	if err != nil || len(decoded) != wgPublicKeyRawLen {
+		return &enrollValidationError{Field: "wg_public_key", Reason: "must be base64-encoded 32 bytes"}
+	}
+	return nil
+}
+
+// isValidDNSName checks that s is a valid RFC 1035 / 1123 DNS name: one or
+// more `.`-separated labels, each 1-63 chars of `[a-z0-9-]`, with no leading
+// or trailing hyphen. The caller is responsible for lowercasing s first.
+func isValidDNSName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if !isValidDNSLabel(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidDNSLabel(label string) bool {
+	n := len(label)
+	if n == 0 || n > maxDNSLabelLen {
+		return false
+	}
+	if label[0] == '-' || label[n-1] == '-' {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		c := label[i]
 		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '.' || r == '-':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-':
 		default:
 			return false
 		}
 	}
 	return true
+}
+
+func containsControlChar(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) ensureEnrollReady(ctx context.Context, w http.ResponseWriter, userID string) bool {

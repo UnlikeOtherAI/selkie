@@ -50,9 +50,13 @@ func (f *fakeDisconnector) DisconnectMobileDevices(_ context.Context, userID str
 
 type fakeHub struct {
 	syncedDevices []string
+	syncAllCalls  int
 }
 
-func (*fakeHub) SyncAll(_ context.Context) error { return nil }
+func (f *fakeHub) SyncAll(_ context.Context) error {
+	f.syncAllCalls++
+	return nil
+}
 
 func (f *fakeHub) SyncDevice(_ context.Context, deviceID string) error {
 	f.syncedDevices = append(f.syncedDevices, deviceID)
@@ -114,6 +118,7 @@ func TestValidateEnrollRequest(t *testing.T) {
 	longHostname := strings.Repeat("a", maxHostnameLen+1)
 	longArch := strings.Repeat("x", maxOSArchLen+1)
 	longVersion := strings.Repeat("v", maxAppVersionLen+1)
+	longLabel := strings.Repeat("a", maxDNSLabelLen+1)
 
 	cases := []struct {
 		name      string
@@ -131,6 +136,18 @@ func TestValidateEnrollRequest(t *testing.T) {
 			wantField: "",
 		},
 		{
+			// Mixed case is canonicalized to lowercase before validation,
+			// so it must still pass.
+			name:      "valid mixed-case hostname",
+			req:       enrollRequest{Hostname: "Phone.Local", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "",
+		},
+		{
+			name:      "wg_public_key whitespace-padded",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: "  " + validWGKey + "  "},
+			wantField: "",
+		},
+		{
 			name:      "missing hostname",
 			req:       enrollRequest{Hostname: "  ", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
 			wantField: "hostname",
@@ -143,6 +160,36 @@ func TestValidateEnrollRequest(t *testing.T) {
 		{
 			name:      "hostname illegal chars",
 			req:       enrollRequest{Hostname: "phone_with_underscore", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname leading hyphen",
+			req:       enrollRequest{Hostname: "-foo", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname trailing hyphen",
+			req:       enrollRequest{Hostname: "foo-", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname double dot",
+			req:       enrollRequest{Hostname: "a..b", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname leading dot",
+			req:       enrollRequest{Hostname: ".a", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname trailing dot",
+			req:       enrollRequest{Hostname: "a.", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname label too long",
+			req:       enrollRequest{Hostname: longLabel + ".local", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
 			wantField: "hostname",
 		},
 		{
@@ -166,6 +213,11 @@ func TestValidateEnrollRequest(t *testing.T) {
 			wantField: "os_arch",
 		},
 		{
+			name:      "os_arch with embedded newline",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm\n64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "os_arch",
+		},
+		{
 			name:      "empty app_version",
 			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "", WGPublicKey: validWGKey},
 			wantField: "app_version",
@@ -173,6 +225,11 @@ func TestValidateEnrollRequest(t *testing.T) {
 		{
 			name:      "app_version too long",
 			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: longVersion, WGPublicKey: validWGKey},
+			wantField: "app_version",
+		},
+		{
+			name:      "app_version with null byte",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0\x00.0", WGPublicKey: validWGKey},
 			wantField: "app_version",
 		},
 		{
@@ -188,6 +245,14 @@ func TestValidateEnrollRequest(t *testing.T) {
 		{
 			name:      "wg_public_key wrong length",
 			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: "QUJD"}, // base64 of "ABC", only 3 bytes
+			wantField: "wg_public_key",
+		},
+		{
+			// URL-safe base64 has the same byte length as the standard
+			// alphabet but uses `-`/`_`; the regex must reject it so the DB
+			// only stores canonical-alphabet keys.
+			name:      "wg_public_key url-safe alphabet",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: strings.Repeat("-", 43) + "="},
 			wantField: "wg_public_key",
 		},
 	}
@@ -213,6 +278,28 @@ func TestValidateEnrollRequest(t *testing.T) {
 				t.Fatalf("field = %q, want %q", verr.Field, tc.wantField)
 			}
 		})
+	}
+}
+
+func TestParseEnrollRequestCanonicalizes(t *testing.T) {
+	t.Parallel()
+	// Input: mixed-case hostname, whitespace-padded wg_public_key. The
+	// returned request must carry the lowercased hostname and trimmed key
+	// so the DB upsert and hub join-key see canonical values.
+	body := fmt.Sprintf(`{"hostname":"Phone.Local","os_platform":"ios","os_arch":"arm64","app_version":"1.0.0","wg_public_key":"  %s  "}`, validWGKey)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/enroll", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	parsed, ok := parseEnrollRequest(rec, req)
+	if !ok {
+		t.Fatalf("parseEnrollRequest failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if parsed.Hostname != "phone.local" {
+		t.Fatalf("hostname = %q, want %q", parsed.Hostname, "phone.local")
+	}
+	if parsed.WGPublicKey != validWGKey {
+		t.Fatalf("wg_public_key = %q, want %q (trimmed)", parsed.WGPublicKey, validWGKey)
 	}
 }
 
@@ -302,7 +389,7 @@ func TestHandleDisconnectRateLimited(t *testing.T) {
 func TestHandleDisconnectRetiresDevices(t *testing.T) {
 	cfg := config.Config{InternalSessionSecret: "test-secret"}
 	hub := &fakeHub{}
-	disc := &fakeDisconnector{deviceIDs: []string{"dev-aaa", "dev-bbb"}}
+	disc := &fakeDisconnector{deviceIDs: []string{"dev-aaa", "dev-bbb", "dev-ccc"}}
 
 	h := New(nil, nil, cfg, nil, nil, hub, fakeLimiter{
 		decision: ratelimit.Decision{Allowed: true},
@@ -327,8 +414,43 @@ func TestHandleDisconnectRetiresDevices(t *testing.T) {
 	if disc.lastUser != "user-3" {
 		t.Fatalf("disconnector userID = %q, want user-3", disc.lastUser)
 	}
-	if len(hub.syncedDevices) != 2 || hub.syncedDevices[0] != "dev-aaa" || hub.syncedDevices[1] != "dev-bbb" {
-		t.Fatalf("hub synced = %v, want [dev-aaa dev-bbb]", hub.syncedDevices)
+	// Multi-device retirement must result in exactly one SyncAll, never
+	// per-device SyncDevice calls (those fan out to N reconciliations
+	// because revoked devices no longer match `status='active'`).
+	if hub.syncAllCalls != 1 {
+		t.Fatalf("hub.SyncAll calls = %d, want 1", hub.syncAllCalls)
+	}
+	if len(hub.syncedDevices) != 0 {
+		t.Fatalf("hub.SyncDevice unexpectedly called: %v", hub.syncedDevices)
+	}
+}
+
+// TestHandleDisconnectNoDevicesSkipsSync confirms that when the store
+// reports no active mobile devices, we do not pay for a hub reconciliation.
+func TestHandleDisconnectNoDevicesSkipsSync(t *testing.T) {
+	cfg := config.Config{InternalSessionSecret: "test-secret"}
+	hub := &fakeHub{}
+	disc := &fakeDisconnector{deviceIDs: nil}
+
+	h := New(nil, nil, cfg, nil, nil, hub, fakeLimiter{
+		decision: ratelimit.Decision{Allowed: true},
+	})
+	h.disconnector = disc
+
+	router := chi.NewRouter()
+	h.Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, cfg.InternalSessionSecret, "user-5"))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if hub.syncAllCalls != 0 {
+		t.Fatalf("hub.SyncAll calls = %d, want 0", hub.syncAllCalls)
 	}
 }
 
