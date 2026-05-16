@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -109,5 +110,57 @@ func TestLoad_DualStackLoopbackWarningSuppressedWhenV6Present(t *testing.T) {
 		if strings.Contains(w, "dual-stack") {
 			t.Fatalf("dual-stack warning should be suppressed when ::1/128 is present; got %q", w)
 		}
+	}
+}
+
+// TestParseTrustedProxyCIDRs_4in6PrefixNormalized asserts that a 4in6 prefix
+// like ::ffff:10.0.0.0/104 is accepted, produces a warning about normalization,
+// and the resulting prefix contains the canonical IPv4 address 10.0.0.5.
+func TestParseTrustedProxyCIDRs_4in6PrefixNormalized(t *testing.T) {
+	t.Setenv("DEV_MODE", "true")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "::ffff:10.0.0.0/104")
+
+	cfg := config.Load()
+	if len(cfg.TrustedProxyCIDRs) != 1 {
+		t.Fatalf("expected 1 prefix after normalization; got %d (%v)", len(cfg.TrustedProxyCIDRs), cfg.TrustedProxyCIDRs)
+	}
+	// The prefix must contain the canonical IPv4 address, not just the 4in6 form.
+	target := netip.MustParseAddr("10.0.0.5")
+	if !cfg.TrustedProxyCIDRs[0].Contains(target) {
+		t.Fatalf("normalized prefix %v should contain 10.0.0.5", cfg.TrustedProxyCIDRs[0])
+	}
+	// A warning must be emitted advising the operator to use the canonical form.
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "4in6") && strings.Contains(w, "::ffff:10.0.0.0/104") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected normalization warning for 4in6 prefix; got %v", cfg.Warnings)
+	}
+}
+
+// TestParseTrustedProxyCIDRs_4in6PrefixTooWide asserts that a 4in6 prefix
+// whose bit-length is less than 96 (so subtracting 96 would yield a negative
+// IPv4 prefix length) is dropped with a distinct warning.
+func TestParseTrustedProxyCIDRs_4in6PrefixTooWide(t *testing.T) {
+	t.Setenv("DEV_MODE", "true")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "::ffff:10.0.0.0/64")
+
+	cfg := config.Load()
+	if len(cfg.TrustedProxyCIDRs) != 0 {
+		t.Fatalf("too-wide 4in6 prefix should be dropped; got %v", cfg.TrustedProxyCIDRs)
+	}
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "bits<96") && strings.Contains(w, "::ffff:10.0.0.0/64") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected bits<96 warning for too-wide 4in6 prefix; got %v", cfg.Warnings)
 	}
 }

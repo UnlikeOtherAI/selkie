@@ -223,10 +223,14 @@ func TestClientIP_IPv4MappedAttackerLeftmostUnmapped(t *testing.T) {
 	}
 }
 
-// TestClientIP_ZonedIPv6Stripped covers the Postgres inet-cast suppression
-// vector: a zoned IPv6 like fe80::1%eth0 round-trips through String() with
-// the "%zone" suffix, which Postgres rejects on inet cast, causing the
-// audit row write to fail. The returned value must never carry a zone.
+// TestClientIP_ZonedIPv6Stripped covers two invariants simultaneously:
+//  1. Zone stripping: "%eth0" is removed before any downstream processing.
+//  2. Address-class rejection: after stripping, fe80::1 is link-local unicast
+//     and cannot be a real client address. It must be rejected and fall back to
+//     the peer rather than being returned — even though it is "parseable" — to
+//     prevent link-local injection into rate-limit buckets or audit rows.
+//
+// The returned value must therefore be the peer IP, not fe80::1.
 func TestClientIP_ZonedIPv6Stripped(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "127.0.0.1:54321"
@@ -236,8 +240,9 @@ func TestClientIP_ZonedIPv6Stripped(t *testing.T) {
 	if strings.Contains(got, "%") {
 		t.Fatalf("returned address must not retain zone suffix; got %q", got)
 	}
-	if got != "fe80::1" {
-		t.Fatalf("expected zone stripped to fe80::1; got %q", got)
+	// fe80::1 is link-local and must be rejected; fallback is the peer.
+	if got != "127.0.0.1" {
+		t.Fatalf("link-local zoned XFF must fall back to peer 127.0.0.1; got %q", got)
 	}
 }
 
@@ -253,6 +258,64 @@ func TestClientIP_4in6PeerNormalized(t *testing.T) {
 	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8"))
 	if got != "203.0.113.7" {
 		t.Fatalf("4in6 peer should be trusted and XFF honored; got %q", got)
+	}
+}
+
+// TestClientIP_4in6TrustedPrefixHonored verifies that a trusted-proxy list
+// containing a 4in6 prefix that has been parser-normalized to its canonical
+// IPv4 form still trusts a peer whose address is the corresponding v4 address
+// and honors X-Forwarded-For for that peer.
+//
+// The config parser normalizes "::ffff:127.0.0.1/128" → "127.0.0.1/32" before
+// storing it. This test exercises the resulting prefix directly, simulating the
+// post-normalization state.
+func TestClientIP_4in6TrustedPrefixHonored(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+
+	// Simulate what parseTrustedProxyCIDRs produces after normalizing
+	// "::ffff:127.0.0.1/128": the canonical IPv4 prefix 127.0.0.1/32.
+	trusted := mustPrefixes(t, "127.0.0.1/32")
+	got := audit.ClientIP(req, trusted)
+	if got != "203.0.113.7" {
+		t.Fatalf("4in6-normalized trusted prefix should trust peer 127.0.0.1 and honor XFF; got %q", got)
+	}
+}
+
+// TestClientIP_RejectsBogusAddressClasses is a table-driven test asserting that
+// addresses which cannot belong to a real client (unspecified, multicast,
+// link-local unicast, and the IPv4 limited broadcast) are treated like an
+// unparseable hop and cause a fallback to the peer address, never returned
+// directly regardless of trust chain position.
+func TestClientIP_RejectsBogusAddressClasses(t *testing.T) {
+	cases := []struct {
+		name    string
+		xffAddr string
+	}{
+		{"unspecified v4", "0.0.0.0"},
+		{"unspecified v6", "::"},
+		{"multicast v4", "224.0.0.1"},
+		{"multicast v6", "ff02::1"},
+		{"link-local unicast v4", "169.254.1.1"},
+		{"link-local unicast v6", "fe80::1"},
+		{"limited broadcast", "255.255.255.255"},
+	}
+	trusted := mustPrefixes(t, "127.0.0.0/8")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = "127.0.0.1:54321"
+			req.Header.Set("X-Forwarded-For", tc.xffAddr)
+
+			got := audit.ClientIP(req, trusted)
+			if got == tc.xffAddr {
+				t.Fatalf("bogus address %q must not be returned; expected peer fallback 127.0.0.1, got %q", tc.xffAddr, got)
+			}
+			if got != "127.0.0.1" {
+				t.Fatalf("bogus address class in XFF should fall back to peer 127.0.0.1; got %q", got)
+			}
+		})
 	}
 }
 

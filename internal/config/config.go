@@ -122,6 +122,19 @@ func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring invalid entry %q: %v", entry, err))
 			continue
 		}
+		// Normalize 4in6 prefixes (e.g. ::ffff:10.0.0.0/104) to their
+		// canonical IPv4 form so they line up with unmapped candidate IPs in
+		// the trust check. Without this, Contains is family-strict and a
+		// 4in6-configured trusted CIDR silently stops matching any peer.
+		if prefix.Addr().Is4In6() {
+			bits := prefix.Bits() - 96
+			if bits < 0 {
+				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring 4in6 prefix %q with bits<96; use the canonical IPv4 form", entry))
+				continue
+			}
+			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: 4in6 prefix %q normalized to canonical IPv4 form; configure the IPv4 CIDR directly to silence this warning", entry))
+			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), bits)
+		}
 		prefixes = append(prefixes, prefix)
 	}
 	if w := dualStackLoopbackWarning(prefixes); w != "" {
@@ -136,18 +149,14 @@ func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 // loopback only) lands as an untrusted peer and silently collapses every
 // such caller onto a single rate-limit bucket while bypassing XFF trust.
 func dualStackLoopbackWarning(prefixes []netip.Prefix) string {
-	haveV4Loopback := false
-	haveV6Loopback := false
+	v4Loop := netip.MustParseAddr("127.0.0.1")
+	v6Loop := netip.MustParseAddr("::1")
+	var haveV4Loopback, haveV6Loopback bool
 	for _, p := range prefixes {
-		addr := p.Addr()
-		if !addr.IsLoopback() {
-			continue
-		}
-		if addr.Is4() || addr.Is4In6() {
+		if p.Contains(v4Loop) {
 			haveV4Loopback = true
-			continue
 		}
-		if addr.Is6() {
+		if p.Contains(v6Loop) {
 			haveV6Loopback = true
 		}
 	}

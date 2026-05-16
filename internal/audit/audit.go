@@ -142,6 +142,17 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 		if addr.Zone() != "" {
 			addr = addr.WithZone("")
 		}
+		// Reject addresses that cannot belong to a real client: unspecified
+		// (0.0.0.0 / ::), multicast (224.0.0.0/4, ff00::/8), link-local
+		// unicast (169.254.0.0/16, fe80::/10), and the IPv4 limited broadcast
+		// (255.255.255.255). Any of these in an XFF header is either a
+		// misconfiguration or an attempt to pin callers onto a shared
+		// rate-limit bucket / pollute audit rows. Treat as unparseable and
+		// fall back to the peer.
+		v4Broadcast := netip.MustParseAddr("255.255.255.255")
+		if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr == v4Broadcast {
+			return peer.Unmap().String()
+		}
 		if ipInPrefixes(addr, trusted) {
 			continue
 		}
