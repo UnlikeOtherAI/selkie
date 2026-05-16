@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -25,6 +26,12 @@ import (
 type HubSyncer interface {
 	SyncAll(ctx context.Context) error
 	SyncDevice(ctx context.Context, deviceID string) error
+}
+
+// auditLogger is the subset of audit.Logger used by this package.
+// Defined as an interface so tests can inject a spy without a live DB.
+type auditLogger interface {
+	Log(ctx context.Context, evt audit.Event) error
 }
 
 // mobileDeviceDisconnector revokes a user's mobile devices and retires their
@@ -50,7 +57,7 @@ type Handler struct {
 	logger       *zap.Logger
 	cfg          config.Config
 	overlay      *overlay.Allocator
-	audit        *audit.Logger
+	audit        auditLogger
 	hub          HubSyncer
 	limiter      ratelimit.Limiter
 	disconnector mobileDeviceDisconnector
@@ -83,7 +90,13 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	h := &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor, hub: hub, limiter: limiter}
+	h := &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, hub: hub, limiter: limiter}
+	// Preserve nil-ability: a nil *audit.Logger assigned directly to the
+	// auditLogger interface would produce a non-nil interface holding a nil
+	// pointer, defeating the h.audit == nil guard in auditMobileDisconnect.
+	if auditor != nil {
+		h.audit = auditor
+	}
 	h.disconnector = pgDisconnector{db: db}
 	return h
 }
@@ -245,7 +258,10 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	if h.hub != nil {
 		if syncErr := h.hub.SyncAll(ctx); syncErr != nil {
 			h.logger.Error("sync wireguard hub after mobile disconnect", zap.Error(syncErr), zap.Int("device_count", len(deviceIDs)))
-			h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs, "sync_failed", syncErr)
+			// audit_events.outcome CHECK enum: success | failure | allow | deny | info
+			// (migrations/001_initial.sql:285). Use metadata for finer-grained reasons.
+			h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs, "failure", syncErr)
+			w.Header().Set("Retry-After", strconv.Itoa(int(mobileDisconnectWindow.Seconds())))
 			writeError(w, http.StatusServiceUnavailable, "device revoked in database but wireguard sync failed; retry to fully tear down")
 			return
 		}
@@ -265,18 +281,19 @@ func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, us
 	if h.audit == nil {
 		return
 	}
-	outcome := outcomeOverride
-	if outcome == "" {
-		outcome = "success"
-		if len(deviceIDs) == 0 {
-			outcome = "info"
-		}
-	}
 	metadata := map[string]any{"device_ids": deviceIDs, "device_count": len(deviceIDs)}
+	outcome := "success"
+	if len(deviceIDs) == 0 {
+		outcome = "info"
+	}
+	if outcomeOverride != "" {
+		outcome = outcomeOverride
+		metadata["failure_reason"] = "wg_sync_failed"
+	}
 	if syncErr != nil {
 		msg := syncErr.Error()
 		if len(msg) > 200 {
-			msg = msg[:200]
+			msg = strings.ToValidUTF8(msg[:200], "")
 		}
 		metadata["sync_error"] = msg
 	}

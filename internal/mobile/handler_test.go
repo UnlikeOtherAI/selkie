@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/unlikeotherai/selkie/internal/audit"
 	"github.com/unlikeotherai/selkie/internal/config"
 	"github.com/unlikeotherai/selkie/internal/ratelimit"
 	"go.uber.org/zap"
@@ -790,6 +792,130 @@ func TestHandleDisconnect_RetryAfterSyncFailureReconciles(t *testing.T) {
 	// SyncAll must have been called on the retry (total = 2 across both calls).
 	if hub.syncAllCalls != 2 {
 		t.Fatalf("second call (retry): hub.SyncAll total calls = %d, want 2", hub.syncAllCalls)
+	}
+}
+
+// spyAuditLogger captures the most recent audit.Event for assertion in tests.
+type spyAuditLogger struct {
+	events []audit.Event
+}
+
+func (s *spyAuditLogger) Log(_ context.Context, evt audit.Event) error {
+	s.events = append(s.events, evt)
+	return nil
+}
+
+func (s *spyAuditLogger) last() (audit.Event, bool) {
+	if len(s.events) == 0 {
+		return audit.Event{}, false
+	}
+	return s.events[len(s.events)-1], true
+}
+
+// TestHandleDisconnectSyncFailureAuditOutcome verifies Fix 1: the audit event
+// written on SyncAll failure uses outcome="failure" (a valid CHECK enum value)
+// and records failure_reason="wg_sync_failed" in metadata. Previously the code
+// passed outcomeOverride="sync_failed" which violates the DB CHECK constraint
+// at migrations/001_initial.sql:285 and caused every 503 path to silently drop
+// the audit row with a 23514 check_violation.
+func TestHandleDisconnectSyncFailureAuditOutcome(t *testing.T) {
+	cfg := config.Config{InternalSessionSecret: "test-secret"}
+	spy := &spyAuditLogger{}
+	hub := &fakeHub{syncAllErr: errors.New("hub exploded")}
+	disc := &fakeDisconnectorWithStatus{deviceIDs: []string{"dev-audit"}}
+
+	h := New(nil, nil, cfg, nil, nil, hub, fakeLimiter{
+		decision: ratelimit.Decision{Allowed: true},
+	})
+	h.disconnector = disc
+	h.audit = spy
+
+	router := chi.NewRouter()
+	h.Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, cfg.InternalSessionSecret, "user-audit"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+
+	evt, ok := spy.last()
+	if !ok {
+		t.Fatal("no audit event recorded; expected one with outcome=failure")
+	}
+	if evt.Outcome != "failure" {
+		t.Fatalf("audit outcome = %q, want %q (must satisfy DB CHECK constraint)", evt.Outcome, "failure")
+	}
+	reason, _ := evt.Metadata["failure_reason"].(string)
+	if reason != "wg_sync_failed" {
+		t.Fatalf("audit metadata.failure_reason = %q, want %q", reason, "wg_sync_failed")
+	}
+}
+
+// TestHandleDisconnectSyncFailureRetryAfterHeader verifies Fix 2: a 503 on
+// SyncAll failure must carry a Retry-After header equal to the
+// mobileDisconnectWindow in seconds so clients can back off programmatically.
+func TestHandleDisconnectSyncFailureRetryAfterHeader(t *testing.T) {
+	cfg := config.Config{InternalSessionSecret: "test-secret"}
+	hub := &fakeHub{syncAllErr: errors.New("hub unreachable")}
+	disc := &fakeDisconnectorWithStatus{deviceIDs: []string{"dev-ra"}}
+
+	h := New(nil, nil, cfg, nil, nil, hub, fakeLimiter{
+		decision: ratelimit.Decision{Allowed: true},
+	})
+	h.disconnector = disc
+
+	router := chi.NewRouter()
+	h.Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, cfg.InternalSessionSecret, "user-ra"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	want := strconv.Itoa(int(mobileDisconnectWindow.Seconds()))
+	if got := rec.Header().Get("Retry-After"); got != want {
+		t.Fatalf("Retry-After = %q, want %q", got, want)
+	}
+}
+
+// TestAuditMobileDisconnectUTF8Truncation verifies Fix 3: a sync error whose
+// message contains a multi-byte UTF-8 sequence that straddles the 200-byte
+// boundary is truncated without producing invalid UTF-8 sequences in metadata.
+func TestAuditMobileDisconnectUTF8Truncation(t *testing.T) {
+	spy := &spyAuditLogger{}
+	h := &Handler{logger: zap.NewNop(), audit: spy}
+
+	// Build a 210-byte string: 199 ASCII bytes followed by a 3-byte UTF-8
+	// rune (U+4E16, 世), then more ASCII. Naive msg[:200] would cut the 3-byte
+	// rune after its first byte, producing invalid UTF-8.
+	base := strings.Repeat("a", 199) + "世" + strings.Repeat("b", 10)
+	syncErr := errors.New(base)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	h.auditMobileDisconnect(context.Background(), req, "u1", []string{"d1"}, "failure", syncErr)
+
+	evt, ok := spy.last()
+	if !ok {
+		t.Fatal("no audit event recorded")
+	}
+	msg, _ := evt.Metadata["sync_error"].(string)
+	if msg == "" {
+		t.Fatal("sync_error missing from metadata")
+	}
+	for i, r := range msg {
+		if r == '\uFFFD' {
+			t.Fatalf("sync_error contains U+FFFD replacement at byte %d; truncation is not UTF-8 safe", i)
+		}
+	}
+	if len(msg) > 200 {
+		t.Fatalf("sync_error length = %d, want <= 200 bytes", len(msg))
 	}
 }
 
