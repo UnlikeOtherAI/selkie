@@ -13,18 +13,17 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command:
-      - /bin/sh
-      - -lc
-      - exec redis-server --appendonly yes --bind 0.0.0.0 --protected-mode yes --requirepass "$${REDIS_PASSWORD}"
+    network_mode: host
+    # Refuse to start if REDIS_PASSWORD is empty; redis-server accepts
+    # --requirepass "" which silently disables AUTH while protected-mode
+    # still passes due to the 127.0.0.1 bind. Fail fast instead.
+    command: ["sh", "-c", "[ -n \"$$REDIS_PASSWORD\" ] || { echo 'REDIS_PASSWORD empty'; exit 1; }; exec redis-server --bind 127.0.0.1 --protected-mode yes --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -63,6 +62,10 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     network_mode: host
+    # Do NOT add `security_opt: ["no-new-privileges:true"]` here.
+    # NNP causes execve to drop file capabilities on non-setuid binaries when
+    # invoked by a non-root uid, which would silently break `ip` and `wg`
+    # (granted cap_net_admin via setcap in the Dockerfile for uid 10001).
     cap_add:
       - NET_ADMIN
     depends_on:
