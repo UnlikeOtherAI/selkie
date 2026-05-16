@@ -27,19 +27,29 @@ type HubSyncer interface {
 	SyncDevice(ctx context.Context, deviceID string) error
 }
 
+// mobileDeviceDisconnector revokes a user's mobile devices and retires their
+// active WireGuard key rows. It exists as an interface so the HTTP handler can
+// be exercised without a live database.
+type mobileDeviceDisconnector interface {
+	DisconnectMobileDevices(ctx context.Context, userID string) ([]string, error)
+}
+
 const (
-	mobileEnrollLimit  = 10
-	mobileEnrollWindow = time.Minute
+	mobileEnrollLimit      = 10
+	mobileEnrollWindow     = time.Minute
+	mobileDisconnectLimit  = 10
+	mobileDisconnectWindow = time.Minute
 )
 
 type Handler struct {
-	db      *store.DB
-	logger  *zap.Logger
-	cfg     config.Config
-	overlay *overlay.Allocator
-	audit   *audit.Logger
-	hub     HubSyncer
-	limiter ratelimit.Limiter
+	db           *store.DB
+	logger       *zap.Logger
+	cfg          config.Config
+	overlay      *overlay.Allocator
+	audit        *audit.Logger
+	hub          HubSyncer
+	limiter      ratelimit.Limiter
+	disconnector mobileDeviceDisconnector
 }
 
 type enrollRequest struct {
@@ -69,7 +79,9 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor, hub: hub, limiter: limiter}
+	h := &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor, hub: hub, limiter: limiter}
+	h.disconnector = pgDisconnector{db: db}
+	return h
 }
 
 func (h *Handler) Mount(r chi.Router) {
@@ -108,11 +120,28 @@ func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	h.auditMobileEnroll(ctx, r, claims.Sub, deviceID)
 
+	h.writeMobileEnrollSuccess(w, deviceID, claims.Sub, overlayIP)
+}
+
+// writeMobileEnrollSuccess renders the WireGuard config for the freshly
+// enrolled device and writes the success response. It returns false (after
+// writing an error response) when the overlay IP is missing or the WireGuard
+// config cannot be rendered.
+func (h *Handler) writeMobileEnrollSuccess(w http.ResponseWriter, deviceID, userID string, overlayIP *string) bool {
+	if overlayIP == nil {
+		h.logger.Error("mobile enroll missing overlay allocation",
+			zap.String("device_id", deviceID),
+			zap.String("user_id", userID),
+		)
+		writeError(w, http.StatusServiceUnavailable, "overlay not allocated")
+		return false
+	}
+
 	wgConfig, renderErr := h.renderMobileWGConfig(*overlayIP)
 	if renderErr != nil {
 		h.logger.Error("render mobile wireguard config", zap.Error(renderErr), zap.String("device_id", deviceID))
 		writeError(w, http.StatusInternalServerError, "failed to build wireguard config")
-		return
+		return false
 	}
 
 	writeJSON(w, http.StatusOK, enrollResponse{
@@ -120,6 +149,7 @@ func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		OverlayIP: overlayIP,
 		WGConfig:  wgConfig,
 	})
+	return true
 }
 
 func (h *Handler) handleListServers(w http.ResponseWriter, r *http.Request) {
@@ -175,21 +205,58 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.audit != nil {
-		if auditErr := h.audit.Log(r.Context(), audit.Event{
-			ActorUserID: &claims.Sub,
-			Action:      "mobile.disconnect",
-			Outcome:     "info",
-			TargetTable: "users",
-			TargetID:    nil,
-			RemoteIP:    audit.RemoteAddr(r),
-			UserAgent:   r.UserAgent(),
-		}); auditErr != nil {
-			h.logger.Error("audit mobile disconnect", zap.Error(auditErr))
+	if !h.allowRateLimit(r.Context(), w, ratelimit.Key("mobile", "disconnect", "user", claims.Sub), mobileDisconnectLimit, mobileDisconnectWindow) {
+		return
+	}
+	if h.disconnector == nil {
+		writeError(w, http.StatusInternalServerError, "database unavailable")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	deviceIDs, err := h.disconnector.DisconnectMobileDevices(ctx, claims.Sub)
+	if err != nil {
+		h.logger.Error("disconnect mobile devices", zap.Error(err), zap.String("user_id", claims.Sub))
+		writeError(w, http.StatusInternalServerError, "failed to disconnect mobile devices")
+		return
+	}
+
+	if h.hub != nil {
+		for _, deviceID := range deviceIDs {
+			if syncErr := h.hub.SyncDevice(ctx, deviceID); syncErr != nil {
+				h.logger.Error("sync mobile wireguard peer after disconnect", zap.Error(syncErr), zap.String("device_id", deviceID))
+			}
 		}
 	}
 
+	h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs)
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, userID string, deviceIDs []string) {
+	if h.audit == nil {
+		return
+	}
+	outcome := "success"
+	if len(deviceIDs) == 0 {
+		outcome = "info"
+	}
+	metadata := map[string]any{"device_ids": deviceIDs, "device_count": len(deviceIDs)}
+	if auditErr := h.audit.Log(ctx, audit.Event{
+		ActorUserID: &userID,
+		Action:      "mobile.disconnect",
+		Outcome:     outcome,
+		TargetTable: "devices",
+		TargetID:    nil,
+		RemoteIP:    audit.RemoteAddr(r),
+		UserAgent:   r.UserAgent(),
+		Metadata:    metadata,
+	}); auditErr != nil {
+		h.logger.Error("audit mobile disconnect", zap.Error(auditErr))
+	}
 }
 
 func (h *Handler) renderMobileWGConfig(deviceOverlayIP string) (string, error) {

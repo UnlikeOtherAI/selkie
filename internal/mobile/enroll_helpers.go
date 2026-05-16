@@ -2,7 +2,9 @@ package mobile
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -13,6 +15,24 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const (
+	maxHostnameLen    = 253
+	maxOSArchLen      = 64
+	maxAppVersionLen  = 64
+	wgPublicKeyRawLen = 32
+)
+
+// enrollValidationError indicates a specific field of the enrollment request
+// failed validation. The bad value is intentionally not exposed.
+type enrollValidationError struct {
+	Field  string
+	Reason string
+}
+
+func (e *enrollValidationError) Error() string {
+	return fmt.Sprintf("invalid %s: %s", e.Field, e.Reason)
+}
+
 func parseEnrollRequest(w http.ResponseWriter, r *http.Request) (enrollRequest, bool) {
 	var req enrollRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -20,17 +40,81 @@ func parseEnrollRequest(w http.ResponseWriter, r *http.Request) (enrollRequest, 
 		return enrollRequest{}, false
 	}
 	if err := validateEnrollRequest(req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeEnrollValidationError(w, err)
 		return enrollRequest{}, false
 	}
 	return req, true
 }
 
-func validateEnrollRequest(req enrollRequest) error {
-	if strings.TrimSpace(req.Hostname) == "" || strings.TrimSpace(req.OSPlatform) == "" || strings.TrimSpace(req.OSArch) == "" || strings.TrimSpace(req.AppVersion) == "" || strings.TrimSpace(req.WGPublicKey) == "" {
-		return errors.New("missing required fields")
+func writeEnrollValidationError(w http.ResponseWriter, err error) {
+	var verr *enrollValidationError
+	if errors.As(err, &verr) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error":  "invalid request",
+			"field":  verr.Field,
+			"reason": verr.Reason,
+		})
+		return
 	}
+	writeError(w, http.StatusBadRequest, err.Error())
+}
+
+func validateEnrollRequest(req enrollRequest) error {
+	hostname := strings.TrimSpace(req.Hostname)
+	switch {
+	case hostname == "":
+		return &enrollValidationError{Field: "hostname", Reason: "required"}
+	case len(hostname) > maxHostnameLen:
+		return &enrollValidationError{Field: "hostname", Reason: "too long"}
+	case !isDNSSafe(hostname):
+		return &enrollValidationError{Field: "hostname", Reason: "must contain only letters, digits, '.' or '-'"}
+	}
+
+	platform := strings.TrimSpace(req.OSPlatform)
+	if platform != "ios" && platform != "android" {
+		return &enrollValidationError{Field: "os_platform", Reason: "must be 'ios' or 'android'"}
+	}
+
+	osArch := strings.TrimSpace(req.OSArch)
+	switch {
+	case osArch == "":
+		return &enrollValidationError{Field: "os_arch", Reason: "required"}
+	case len(osArch) > maxOSArchLen:
+		return &enrollValidationError{Field: "os_arch", Reason: "too long"}
+	}
+
+	appVersion := strings.TrimSpace(req.AppVersion)
+	switch {
+	case appVersion == "":
+		return &enrollValidationError{Field: "app_version", Reason: "required"}
+	case len(appVersion) > maxAppVersionLen:
+		return &enrollValidationError{Field: "app_version", Reason: "too long"}
+	}
+
+	wgKey := strings.TrimSpace(req.WGPublicKey)
+	if wgKey == "" {
+		return &enrollValidationError{Field: "wg_public_key", Reason: "required"}
+	}
+	raw, decodeErr := base64.StdEncoding.DecodeString(wgKey)
+	if decodeErr != nil || len(raw) != wgPublicKeyRawLen {
+		return &enrollValidationError{Field: "wg_public_key", Reason: "must be base64-encoded 32 bytes"}
+	}
+
 	return nil
+}
+
+func isDNSSafe(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) ensureEnrollReady(ctx context.Context, w http.ResponseWriter, userID string) bool {
