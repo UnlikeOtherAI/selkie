@@ -51,6 +51,7 @@ func (h *Handler) Mount(r chi.Router) {
 	// Admin API endpoints require auth and super-user status.
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(h.cfg))
+		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Get("/api/v1/audit", h.handleListAuditEvents)
 		r.Get("/api/v1/system/info", h.handleSystemInfo)
 	})

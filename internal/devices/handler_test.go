@@ -108,7 +108,14 @@ func TestHandlePairClaimLockedOut(t *testing.T) {
 
 func signedToken(t *testing.T, secret, subject string) string {
 	t.Helper()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": subject}).SignedString([]byte(secret))
+	claims := jwt.MapClaims{
+		"sub": subject,
+		"iss": "selkie",
+		"aud": []string{"admin"},
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}

@@ -59,7 +59,8 @@ func (h *CallbackHandler) ServeDevLogin(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	token, err := h.mintToken(userID, isSuper, DevUserEmail, DevUserDisplayName, DevUserPicture)
+	// Dev-login intentionally mints both audiences so e2e tests can hit admin and mobile routes with one token; production paths mint a single audience.
+	token, err := h.mintToken(userID, isSuper, DevUserEmail, DevUserDisplayName, DevUserPicture, []string{AudienceAdmin, AudienceMobile})
 	if err != nil {
 		http.Error(w, "token error", http.StatusInternalServerError)
 		return

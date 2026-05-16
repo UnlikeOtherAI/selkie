@@ -6,15 +6,39 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/unlikeotherai/selkie/internal/config"
 )
 
+// Issuer is the iss claim value Selkie embeds in every session token it mints.
+const Issuer = "selkie"
+
+// Audience values accepted on Selkie session tokens.
+const (
+	AudienceAdmin  = "admin"
+	AudienceMobile = "mobile"
+)
+
+// JWTLeeway is the clock skew tolerance applied when verifying session JWTs.
+const JWTLeeway = 30 * time.Second
+
 // Claims holds the authenticated user identity extracted from a JWT.
 type Claims struct {
-	Sub     string
-	IsSuper bool
+	Sub      string
+	IsSuper  bool
+	Audience []string
+}
+
+// HasAudience reports whether the claims include the given audience value.
+func (c Claims) HasAudience(audience string) bool {
+	for _, a := range c.Audience {
+		if a == audience {
+			return true
+		}
+	}
+	return false
 }
 
 type contextKey string
@@ -51,19 +75,44 @@ func Middleware(cfg config.Config) func(http.Handler) http.Handler {
 				}
 
 				return secret, nil
-			}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+			},
+				jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+				jwt.WithIssuer(Issuer),
+				jwt.WithExpirationRequired(),
+				jwt.WithLeeway(JWTLeeway),
+			)
 			if err != nil || !token.Valid || parsedClaims.Subject == "" {
 				writeUnauthorized(w)
 				return
 			}
 
 			claims := Claims{
-				Sub:     parsedClaims.Subject,
-				IsSuper: parsedClaims.IsSuper,
+				Sub:      parsedClaims.Subject,
+				IsSuper:  parsedClaims.IsSuper,
+				Audience: []string(parsedClaims.Audience),
+			}
+			if !claims.HasAudience(AudienceAdmin) && !claims.HasAudience(AudienceMobile) {
+				writeUnauthorized(w)
+				return
 			}
 
 			ctx := context.WithValue(r.Context(), claimsContextKey, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireAudience returns a middleware that rejects requests whose Claims do
+// not include the given audience value. It must be mounted after Middleware.
+func RequireAudience(audience string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := ClaimsFromContext(r.Context())
+			if !ok || !claims.HasAudience(audience) {
+				writeUnauthorized(w)
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }

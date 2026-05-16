@@ -17,6 +17,11 @@ const testSecret = "test-session-secret-256-bits-long!"
 
 func mintToken(t *testing.T, sub string, isSuper bool) string {
 	t.Helper()
+	return mintTokenWithAudience(t, sub, isSuper, jwt.ClaimStrings{"admin"})
+}
+
+func mintTokenWithAudience(t *testing.T, sub string, isSuper bool, aud jwt.ClaimStrings) string {
+	t.Helper()
 
 	claims := &struct {
 		IsSuper bool `json:"is_super"`
@@ -24,7 +29,9 @@ func mintToken(t *testing.T, sub string, isSuper bool) string {
 	}{
 		IsSuper: isSuper,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "selkie",
 			Subject:   sub,
+			Audience:  aud,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
@@ -153,6 +160,32 @@ func TestSystemInfo_SuperUserReachesDB(t *testing.T) {
 	}()
 
 	r.ServeHTTP(rr, req)
+}
+
+// --- Audience gate: a mobile-only JWT must never reach an admin route ---
+
+func TestAudit_MobileAudienceRejected(t *testing.T) {
+	r := setupRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit", nil)
+	req.Header.Set("Authorization", "Bearer "+mintTokenWithAudience(t, "mobile-user", true, jwt.ClaimStrings{"mobile"}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized && rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 401 or 403 for mobile-only audience", rr.Code)
+	}
+}
+
+func TestSystemInfo_MobileAudienceRejected(t *testing.T) {
+	r := setupRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/system/info", nil)
+	req.Header.Set("Authorization", "Bearer "+mintTokenWithAudience(t, "mobile-user", true, jwt.ClaimStrings{"mobile"}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized && rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 401 or 403 for mobile-only audience", rr.Code)
+	}
 }
 
 // --- Route wiring ---

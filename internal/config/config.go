@@ -21,6 +21,27 @@ var ErrMissingRedisPassword = errors.New("config: REDIS_URL missing password (se
 // rdb.Client dereference at boot.
 var ErrMissingRedisURL = errors.New("config: REDIS_URL is required in non-dev mode")
 
+// ErrMissingSessionSecret indicates that INTERNAL_SESSION_SECRET was not set in
+// a non-development environment. The control-server must refuse to start when
+// this condition is detected so that requests are never authenticated against
+// an empty HMAC key.
+var ErrMissingSessionSecret = errors.New("INTERNAL_SESSION_SECRET is required when DEV_MODE is false")
+
+// ErrWeakSessionSecret indicates that INTERNAL_SESSION_SECRET is set but too
+// short to provide meaningful HMAC strength. We require at least 32 bytes in
+// production so brute-forcing the HMAC key is not feasible.
+var ErrWeakSessionSecret = errors.New("INTERNAL_SESSION_SECRET must be at least 32 bytes when DEV_MODE is false")
+
+// ErrUnconfirmedDevMode indicates that DEV_MODE=true was set without the
+// matching CONFIRM_DEV_MODE=true acknowledgement. A single misconfigured env
+// var must not be enough to silently disable HMAC validation and unlock
+// /auth/dev-login in production.
+var ErrUnconfirmedDevMode = errors.New("DEV_MODE=true requires CONFIRM_DEV_MODE=true to start; refusing to boot without explicit confirmation")
+
+// MinSessionSecretLen is the minimum acceptable length for the HMAC session
+// secret in production. 32 bytes matches the output width of HMAC-SHA256.
+const MinSessionSecretLen = 32
+
 // Config holds all runtime configuration values loaded from the environment.
 type Config struct {
 	UOABaseURL               string
@@ -91,6 +112,7 @@ func Load() Config {
 	}
 }
 
+
 func getenv(key, fallback string) string {
 	value := os.Getenv(key)
 	if value == "" {
@@ -125,12 +147,31 @@ func getenvInt(key string, fallback int) int {
 	return parsed
 }
 
-// Validate enforces invariants that must hold before the server boots in
-// non-dev mode. It requires REDIS_URL to be set in production (so the
-// rate limiter and SSE fan-out clients can initialize without a nil
-// dereference) and, when set, that it carries a non-empty password
-// component.
+// Validate enforces invariants that must hold before the server boots.
+//
+// DEV_MODE=true requires CONFIRM_DEV_MODE=true so a single misconfigured env
+// var cannot silently disable HMAC validation and unlock /auth/dev-login.
+//
+// In non-dev mode:
+//   - INTERNAL_SESSION_SECRET must be set and at least MinSessionSecretLen
+//     bytes long; otherwise requests would be authenticated against an empty
+//     or weak HMAC key.
+//   - REDIS_URL must be set and carry a non-empty password — rate limiter and
+//     SSE fan-out clients depend on a working Redis, and redis 7 silently
+//     disables AUTH when the password is empty.
 func (c Config) Validate() error {
+	if c.DevMode {
+		if os.Getenv("CONFIRM_DEV_MODE") != "true" {
+			return ErrUnconfirmedDevMode
+		}
+	} else {
+		if c.InternalSessionSecret == "" {
+			return ErrMissingSessionSecret
+		}
+		if len(c.InternalSessionSecret) < MinSessionSecretLen {
+			return ErrWeakSessionSecret
+		}
+	}
 	if c.RedisURL == "" {
 		if c.DevMode {
 			return nil
