@@ -66,13 +66,48 @@ func TestLoad_InvalidCIDREntryProducesWarning(t *testing.T) {
 
 func TestLoad_ValidTrustedProxiesNoWarnings(t *testing.T) {
 	t.Setenv("DEV_MODE", "false")
-	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.0/8")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.0/8,::1/128")
 
 	cfg := config.Load()
-	if len(cfg.TrustedProxyCIDRs) != 1 {
-		t.Fatalf("expected 1 trusted prefix; got %d", len(cfg.TrustedProxyCIDRs))
+	if len(cfg.TrustedProxyCIDRs) != 2 {
+		t.Fatalf("expected 2 trusted prefixes; got %d", len(cfg.TrustedProxyCIDRs))
 	}
 	if len(cfg.Warnings) != 0 {
 		t.Fatalf("expected no warnings; got %v", cfg.Warnings)
+	}
+}
+
+// TestLoad_DualStackLoopbackWarning asserts that an IPv4 loopback prefix
+// without a matching ::1/128 emits the dual-stack warning. Go's default
+// listener is dual-stack, so a ::1 peer would otherwise be untrusted and
+// silently collapse onto a shared rate-limit bucket.
+func TestLoad_DualStackLoopbackWarning(t *testing.T) {
+	t.Setenv("DEV_MODE", "false")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.0/8")
+
+	cfg := config.Load()
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "::1/128") && strings.Contains(w, "dual-stack") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected dual-stack loopback warning; got %v", cfg.Warnings)
+	}
+}
+
+// TestLoad_DualStackLoopbackWarningSuppressedWhenV6Present asserts that
+// the warning does not fire when ::1/128 is also trusted.
+func TestLoad_DualStackLoopbackWarningSuppressedWhenV6Present(t *testing.T) {
+	t.Setenv("DEV_MODE", "false")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.0/8,::1/128")
+
+	cfg := config.Load()
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "dual-stack") {
+			t.Fatalf("dual-stack warning should be suppressed when ::1/128 is present; got %q", w)
+		}
 	}
 }

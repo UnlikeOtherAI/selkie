@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/unlikeotherai/selkie/internal/audit"
@@ -174,6 +175,84 @@ func TestClientIP_FullyTrustedChainReturnsPeer(t *testing.T) {
 	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8", "10.0.0.0/8"))
 	if got != "127.0.0.1" {
 		t.Fatalf("fully trusted chain must fall back to peer; got %q", got)
+	}
+}
+
+// TestClientIP_IPv4MappedBypassRejected guards against an attacker who
+// terminates an IPv4-mapped IPv6 form (::ffff:10.0.0.5) at the leftmost
+// non-trusted slot. netip.Prefix.Contains is family-strict, so without
+// Unmap the trust check returns false and the attacker-controlled value
+// would be returned. The walk must Unmap the parsed entry before testing
+// containment so the 4in6 form is recognized as trusted and skipped, and
+// the chain falls back to the trusted peer.
+func TestClientIP_IPv4MappedBypassRejected(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "::ffff:10.0.0.5, 10.0.0.5, 127.0.0.1")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8", "10.0.0.0/8"))
+	if got == "::ffff:10.0.0.5" {
+		t.Fatalf("IPv4-mapped IPv6 form must not bypass IPv4 trusted prefix; got %q", got)
+	}
+	// With Unmap applied, the entire chain is trusted (::ffff:10.0.0.5 →
+	// 10.0.0.5 ∈ 10.0.0.0/8). Fully-trusted-chain semantics fall back to
+	// the peer.
+	if got != "127.0.0.1" {
+		t.Fatalf("expected fully-trusted-chain fallback to peer 127.0.0.1; got %q", got)
+	}
+}
+
+// TestClientIP_IPv4MappedAttackerLeftmost is the tighter variant: the
+// attacker-controlled value is a 4in6 form of an address NOT in any
+// trusted prefix, with a real trusted hop to its right. After Unmap the
+// rightmost-non-trusted walk must surface the unmapped attacker value at
+// the leftmost slot (it's the only non-trusted entry) — but critically
+// never as the raw `::ffff:` form, so downstream rate-limit keys cannot
+// be split via the 4in6 representation.
+func TestClientIP_IPv4MappedAttackerLeftmostUnmapped(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "::ffff:1.2.3.4, 127.0.0.1")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8"))
+	if strings.HasPrefix(got, "::ffff:") {
+		t.Fatalf("returned IP must be normalized to v4 form, never 4in6; got %q", got)
+	}
+	if got != "1.2.3.4" {
+		t.Fatalf("expected unmapped 1.2.3.4; got %q", got)
+	}
+}
+
+// TestClientIP_ZonedIPv6Stripped covers the Postgres inet-cast suppression
+// vector: a zoned IPv6 like fe80::1%eth0 round-trips through String() with
+// the "%zone" suffix, which Postgres rejects on inet cast, causing the
+// audit row write to fail. The returned value must never carry a zone.
+func TestClientIP_ZonedIPv6Stripped(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "fe80::1%eth0")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8"))
+	if strings.Contains(got, "%") {
+		t.Fatalf("returned address must not retain zone suffix; got %q", got)
+	}
+	if got != "fe80::1" {
+		t.Fatalf("expected zone stripped to fe80::1; got %q", got)
+	}
+}
+
+// TestClientIP_4in6PeerNormalized covers the peer-fallback path: an IPv4-
+// mapped peer (e.g. [::ffff:127.0.0.1]:1234) must be recognized as trusted
+// against a v4 prefix, and the returned address must be the unmapped form
+// so the persisted remote_ip never carries a 4in6 representation.
+func TestClientIP_4in6PeerNormalized(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[::ffff:127.0.0.1]:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8"))
+	if got != "203.0.113.7" {
+		t.Fatalf("4in6 peer should be trusted and XFF honored; got %q", got)
 	}
 }
 

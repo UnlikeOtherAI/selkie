@@ -124,7 +124,37 @@ func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 		}
 		prefixes = append(prefixes, prefix)
 	}
+	if w := dualStackLoopbackWarning(prefixes); w != "" {
+		warnings = append(warnings, w)
+	}
 	return prefixes, warnings
+}
+
+// dualStackLoopbackWarning surfaces an operator misconfiguration: an IPv4
+// loopback prefix is trusted but ::1/128 is not. Go's default listener is
+// dual-stack, so a request from `::1` (e.g. a sidecar binding to IPv6
+// loopback only) lands as an untrusted peer and silently collapses every
+// such caller onto a single rate-limit bucket while bypassing XFF trust.
+func dualStackLoopbackWarning(prefixes []netip.Prefix) string {
+	haveV4Loopback := false
+	haveV6Loopback := false
+	for _, p := range prefixes {
+		addr := p.Addr()
+		if !addr.IsLoopback() {
+			continue
+		}
+		if addr.Is4() || addr.Is4In6() {
+			haveV4Loopback = true
+			continue
+		}
+		if addr.Is6() {
+			haveV6Loopback = true
+		}
+	}
+	if haveV4Loopback && !haveV6Loopback {
+		return "TRUSTED_PROXY_CIDRS: IPv4 loopback present but ::1/128 missing; dual-stack listeners may receive untrusted ::1 peers and silently lose rate-limit isolation"
+	}
+	return ""
 }
 
 func getenv(key, fallback string) string {

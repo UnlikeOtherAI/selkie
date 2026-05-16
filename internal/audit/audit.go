@@ -112,11 +112,11 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 		return ""
 	}
 	if !ipInPrefixes(peer, trusted) {
-		return peer.String()
+		return peer.Unmap().String()
 	}
 	values := r.Header.Values("X-Forwarded-For")
 	if len(values) == 0 {
-		return peer.String()
+		return peer.Unmap().String()
 	}
 	joined := strings.Join(values, ",")
 	parts := strings.Split(joined, ",")
@@ -133,15 +133,24 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 		if err != nil {
 			// Unparseable hop in an otherwise trusted chain: fall back to
 			// the peer rather than trusting anything to its left.
-			return peer.String()
+			return peer.Unmap().String()
+		}
+		// Zoned IPv6 (e.g. fe80::1%eth0) round-trips through String() with
+		// the zone suffix and Postgres rejects "%zone" on inet cast, which
+		// would suppress the audit row. Strip the zone before any trust
+		// check or persistence.
+		if addr.Zone() != "" {
+			addr = addr.WithZone("")
 		}
 		if ipInPrefixes(addr, trusted) {
 			continue
 		}
-		return addr.String()
+		// Persist the unmapped form so rate-limit keys and audit rows
+		// never see a 4in6 representation of an IPv4 address.
+		return addr.Unmap().String()
 	}
 	// Entire chain is trusted (or empty after trimming).
-	return peer.String()
+	return peer.Unmap().String()
 }
 
 func peerIP(remoteAddr string) netip.Addr {
@@ -153,10 +162,18 @@ func peerIP(remoteAddr string) netip.Addr {
 	if err != nil {
 		return netip.Addr{}
 	}
-	return addr
+	if addr.Zone() != "" {
+		addr = addr.WithZone("")
+	}
+	return addr.Unmap()
 }
 
 func ipInPrefixes(ip netip.Addr, prefixes []netip.Prefix) bool {
+	// netip.Prefix.Contains is family-strict: an IPv4-mapped IPv6 address
+	// (e.g. ::ffff:10.0.0.5) is NOT contained by an IPv4 prefix even though
+	// it is semantically the same v4 host. Unmap so a 4in6 form cannot
+	// bypass IPv4 trusted prefixes.
+	ip = ip.Unmap()
 	for _, p := range prefixes {
 		if p.Contains(ip) {
 			return true
