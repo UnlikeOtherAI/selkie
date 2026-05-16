@@ -6,4 +6,6 @@ services:
       - "5432:5432"
   redis:
     ports:
-      - "6379:6379"
+      # Bind to loopback only — never expose Redis on 0.0.0.0 even in dev.
+      # If you need to poke Redis on a remote host, `ssh` in and use redis-cli locally.
+      - "127.0.0.1:6379:6379"

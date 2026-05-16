@@ -25,7 +25,9 @@ RUN apk add --no-cache ca-certificates tzdata iproute2 wireguard-tools libcap \
 # `ip` and `wg` (NET_ADMIN must be in the container bounding set via cap_add).
 RUN setcap cap_net_admin+eip /sbin/ip \
     && setcap cap_net_admin+eip /usr/bin/wg \
-    && getcap /sbin/ip /usr/bin/wg | grep -q cap_net_admin
+    && for b in /sbin/ip /usr/bin/wg; do \
+         getcap "$b" | grep -q cap_net_admin || { echo "missing cap_net_admin on $b"; exit 1; }; \
+       done
 
 COPY --from=server-build /selkie-server /usr/local/bin/selkie-server
 COPY --from=admin-build /src/admin-ui/dist /app/admin-ui/dist

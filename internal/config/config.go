@@ -2,9 +2,18 @@
 package config
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 )
+
+// ErrMissingRedisPassword is returned by Validate when REDIS_URL is set but
+// carries no password and DevMode is false. Empty passwords with redis 7
+// silently disable AUTH while protected-mode is still satisfied by the bind,
+// so we reject it explicitly at startup.
+var ErrMissingRedisPassword = errors.New("config: REDIS_URL missing password (set userinfo or omit REDIS_URL for dev)")
 
 // Config holds all runtime configuration values loaded from the environment.
 type Config struct {
@@ -108,6 +117,30 @@ func getenvInt(key string, fallback int) int {
 	}
 
 	return parsed
+}
+
+// Validate enforces invariants that must hold before the server boots in
+// non-dev mode. Currently it requires that REDIS_URL, when set, carries a
+// non-empty password component.
+func (c Config) Validate() error {
+	if c.RedisURL == "" {
+		// No redis configured at all is handled elsewhere (store.NewRedis
+		// returns a nil client and the server logs a warning). Not our
+		// concern here.
+		return nil
+	}
+	u, err := url.Parse(c.RedisURL)
+	if err != nil {
+		return fmt.Errorf("config: parse REDIS_URL: %w", err)
+	}
+	password, hasPassword := u.User.Password()
+	if !hasPassword || password == "" {
+		if c.DevMode {
+			return nil
+		}
+		return ErrMissingRedisPassword
+	}
+	return nil
 }
 
 func getenvBool(key string, fallback bool) bool {
