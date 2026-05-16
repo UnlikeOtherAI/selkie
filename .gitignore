@@ -10,10 +10,15 @@
 *.swp
 *.swo
 
-# build artifacts
+# build artifacts — never commit Go binaries; build from source via Makefile / Dockerfile
 bin/
 /selkie
 /control-server
+/selkie-server
+# catch builds run from inside cmd/<name>/ subdirectories
+cmd/*/control-server
+cmd/*/selkie
+cmd/*/selkie-server
 
 # admin-ui build output
 admin-ui/dist/
