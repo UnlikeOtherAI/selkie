@@ -284,7 +284,7 @@ func (h *Handler) auditMobileEnroll(ctx context.Context, r *http.Request, userID
 		Outcome:     "success",
 		TargetTable: "devices",
 		TargetID:    &deviceID,
-		RemoteIP:    audit.RemoteAddr(r),
+		RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 		UserAgent:   r.UserAgent(),
 	}); auditErr != nil {
 		h.logger.Error("audit mobile enroll", zap.Error(auditErr))

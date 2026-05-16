@@ -166,7 +166,7 @@ func (h *CallbackHandler) ServeMobileHandoffExchange(w http.ResponseWriter, r *h
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.RemoteAddr(r), ratelimit.HashToken(handoffCode)), mobileHandoffExchangeLimit, mobileHandoffExchangeWindow) {
+	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.ClientIP(r, h.cfg.TrustedProxyCIDRs), ratelimit.HashToken(handoffCode)), mobileHandoffExchangeLimit, mobileHandoffExchangeWindow) {
 		cancel()
 		return
 	}
@@ -268,7 +268,7 @@ func (h *CallbackHandler) recordMobileHandoffFailure(ctx context.Context, source
 }
 
 func (h *CallbackHandler) handleInvalidMobileHandoff(ctx context.Context, w http.ResponseWriter, r *http.Request, handoffCode string) {
-	allowed, rateErr := h.recordMobileHandoffFailure(ctx, audit.RemoteAddr(r), handoffCode)
+	allowed, rateErr := h.recordMobileHandoffFailure(ctx, audit.ClientIP(r, h.cfg.TrustedProxyCIDRs), handoffCode)
 	if rateErr != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "rate limiting unavailable")
 		return
@@ -331,7 +331,7 @@ func (h *CallbackHandler) auditLogin(ctx context.Context, r *http.Request, userI
 		Outcome:     "success",
 		TargetTable: "users",
 		TargetID:    &userID,
-		RemoteIP:    audit.RemoteAddr(r),
+		RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 		UserAgent:   r.UserAgent(),
 	}); auditErr != nil && h.logger != nil {
 		h.logger.Error("audit user.login", zap.Error(auditErr))

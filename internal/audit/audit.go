@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/unlikeotherai/selkie/internal/store"
@@ -83,16 +84,132 @@ func (l *Logger) Log(ctx context.Context, evt Event) error {
 	return nil
 }
 
-// RemoteAddr extracts the client IP from an HTTP request, preferring X-Forwarded-For.
-func RemoteAddr(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.Split(fwd, ",")[0]
+var (
+	// v4Broadcast is the IPv4 limited-broadcast address (255.255.255.255).
+	// Hoisted here so it is allocated once rather than on every XFF walk.
+	v4Broadcast = netip.MustParseAddr("255.255.255.255")
+
+	// ipv6SiteLocal is the deprecated site-local IPv6 unicast range fec0::/10
+	// (RFC 3879). These addresses return IsGlobalUnicast=true and slip past
+	// the standard bogus-class checks; they must be caught explicitly.
+	ipv6SiteLocal = netip.MustParsePrefix("fec0::/10")
+)
+
+// ClientIP extracts the originating client IP from an HTTP request.
+//
+// The immediate peer (r.RemoteAddr) is the only address the server can verify.
+// X-Forwarded-For is only honored when the peer falls inside one of the
+// trusted proxy CIDRs; otherwise the header is ignored to prevent untrusted
+// clients from forging arbitrary IPs (e.g. for rate-limit key evasion).
+//
+// When the peer is trusted, the XFF list is walked right-to-left and the
+// first non-trusted (i.e. not inside a trusted prefix) IP is returned. This
+// mirrors the canonical "rightmost-non-trusted" algorithm and is safe even
+// when an upstream proxy (e.g. Caddy with default reverse_proxy semantics)
+// appends the real peer to a client-supplied XFF rather than overwriting it.
+// If every entry in the XFF list is itself trusted (chained trusted proxies)
+// or unparseable, the immediate peer is returned.
+//
+// All XFF header instances are concatenated (Header.Values), so requests
+// using Header.Add to produce multiple X-Forwarded-For lines are handled
+// equivalently to a single comma-separated header.
+//
+// Returns the peer IP as a fallback when XFF is missing, malformed, or
+// fully trusted, and an empty string only when r.RemoteAddr itself is
+// unparseable.
+func ClientIP(r *http.Request, trusted []netip.Prefix) string {
+	peer := peerIP(r.RemoteAddr)
+	if !peer.IsValid() {
+		return ""
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if !ipInPrefixes(peer, trusted) {
+		return peer.Unmap().String()
+	}
+	values := r.Header.Values("X-Forwarded-For")
+	if len(values) == 0 {
+		return peer.Unmap().String()
+	}
+	joined := strings.Join(values, ",")
+	parts := strings.Split(joined, ",")
+	// Walk right-to-left: skip trusted-prefix entries (chained trusted
+	// proxies, including a Caddy-appended peer IP) and return the first
+	// non-trusted address encountered. This rejects an attacker-controlled
+	// leftmost value when one or more trusted hops sit to its right.
+	for i := len(parts) - 1; i >= 0; i-- {
+		entry := strings.TrimSpace(parts[i])
+		if entry == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			// Unparseable hop — the chain is genuinely broken, fall back to peer
+			// rather than trusting anything to its left.
+			return peer.Unmap().String()
+		}
+		// Zoned IPv6 (e.g. fe80::1%eth0) round-trips through String() with
+		// the zone suffix and Postgres rejects "%zone" on inet cast, which
+		// would suppress the audit row. Strip the zone before any trust
+		// check or persistence.
+		if addr.Zone() != "" {
+			addr = addr.WithZone("")
+		}
+		// Canonicalize before class checks: 4in6 forms such as ::ffff:0.0.0.0
+		// and ::ffff:255.255.255.255 have IsUnspecified()==false and fail the
+		// family-strict broadcast equality, bypassing the checks below without
+		// this step. Consistent with ipInPrefixes which also Unmaps.
+		addr = addr.Unmap()
+		// Reject addresses that cannot belong to a real client: unspecified
+		// (0.0.0.0 / ::), multicast (224.0.0.0/4, ff00::/8), link-local
+		// unicast (169.254.0.0/16, fe80::/10), the IPv4 limited broadcast
+		// (255.255.255.255), and the deprecated IPv6 site-local range
+		// (fec0::/10, RFC 3879). Any of these in an XFF header is either a
+		// misconfiguration or an attempt to pin callers onto a shared
+		// rate-limit bucket / pollute audit rows. Skip this hop and keep
+		// walking; returning peer here would let an attacker collapse
+		// rate-limit/audit onto the peer by injecting any such value into
+		// a misconfigured chain.
+		if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() ||
+			addr == v4Broadcast || ipv6SiteLocal.Contains(addr) {
+			continue
+		}
+		if ipInPrefixes(addr, trusted) {
+			continue
+		}
+		// Persist the unmapped form so rate-limit keys and audit rows
+		// never see a 4in6 representation of an IPv4 address.
+		return addr.Unmap().String()
+	}
+	// Entire chain is trusted (or empty after trimming).
+	return peer.Unmap().String()
+}
+
+func peerIP(remoteAddr string) netip.Addr {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = remoteAddr
 	}
-	return host
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	if addr.Zone() != "" {
+		addr = addr.WithZone("")
+	}
+	return addr.Unmap()
+}
+
+func ipInPrefixes(ip netip.Addr, prefixes []netip.Prefix) bool {
+	// netip.Prefix.Contains is family-strict: an IPv4-mapped IPv6 address
+	// (e.g. ::ffff:10.0.0.5) is NOT contained by an IPv4 prefix even though
+	// it is semantically the same v4 host. Unmap so a 4in6 form cannot
+	// bypass IPv4 trusted prefixes.
+	ip = ip.Unmap()
+	for _, p := range prefixes {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // nullIfEmpty returns nil for empty strings so Postgres receives NULL for inet columns.

@@ -304,7 +304,7 @@ func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, us
 		Outcome:     outcome,
 		TargetTable: "devices",
 		TargetID:    nil,
-		RemoteIP:    audit.RemoteAddr(r),
+		RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 		UserAgent:   r.UserAgent(),
 		Metadata:    metadata,
 	}); auditErr != nil {

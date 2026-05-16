@@ -1,3 +1,15 @@
+{
+  # Defense-in-depth (Caddy 2.7+): only honor X-Forwarded-For from peers
+  # inside private_ranges, and have Caddy overwrite the outgoing XFF with
+  # its own trusted view of the chain before proxying upstream. This
+  # prevents a client-supplied XFF from reaching the Go server even if the
+  # rightmost-non-trusted walk in internal/audit.ClientIP regresses.
+  servers {
+    trusted_proxies static private_ranges
+    client_ip_headers X-Forwarded-For
+  }
+}
+
 (selkie_edge) {
   encode zstd gzip
 
@@ -12,11 +24,14 @@
   @device_events path_regexp device_events ^/api/v1/devices/[^/]+/events$
   handle @device_events {
     reverse_proxy 127.0.0.1:{$SERVER_PORT:8080} {
+      trusted_proxies private_ranges
       flush_interval -1
     }
   }
 
-  reverse_proxy 127.0.0.1:{$SERVER_PORT:8080}
+  reverse_proxy 127.0.0.1:{$SERVER_PORT:8080} {
+    trusted_proxies private_ranges
+  }
 }
 
 {$ADMIN_HOST} {

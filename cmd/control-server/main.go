@@ -46,6 +46,9 @@ func main() {
 	if cfg.InternalSessionSecret == "" && cfg.DevMode {
 		logger.Warn("INTERNAL_SESSION_SECRET is empty; DEV_MODE is enabled, continuing with empty HMAC key — do NOT use this configuration in production")
 	}
+	for _, w := range cfg.Warnings {
+		logger.Warn("config warning", zap.String("warning", w))
+	}
 
 	ctx := context.Background()
 	if err := runServe(ctx, cfg, logger); err != nil {
