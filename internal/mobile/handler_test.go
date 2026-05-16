@@ -20,8 +20,9 @@ import (
 )
 
 // validWGKey is a base64-encoded 32-byte WireGuard public key used as a
-// validation-passing fixture; it is not a real key.
-const validWGKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+// validation-passing fixture. It is 32 random non-zero bytes that decode
+// outside the Curve25519 low-order set; it is not a real key.
+const validWGKey = "X9VHANJ9krFqd+B0Z/AlbWbiD1RnHmjwGEDtTBvDhk0="
 
 type fakeLimiter struct {
 	decision ratelimit.Decision
@@ -51,11 +52,12 @@ func (f *fakeDisconnector) DisconnectMobileDevices(_ context.Context, userID str
 type fakeHub struct {
 	syncedDevices []string
 	syncAllCalls  int
+	syncAllErr    error
 }
 
 func (f *fakeHub) SyncAll(_ context.Context) error {
 	f.syncAllCalls++
-	return nil
+	return f.syncAllErr
 }
 
 func (f *fakeHub) SyncDevice(_ context.Context, deviceID string) error {
@@ -163,6 +165,24 @@ func TestValidateEnrollRequest(t *testing.T) {
 			wantField: "hostname",
 		},
 		{
+			// Turkish dotted-I (U+0130) ToLowers to ASCII 'i' under Unicode
+			// case-folding; the rejection must fire BEFORE ToLower so it
+			// can't homograph-collide with a real ASCII hostname.
+			name:      "hostname turkish dotted I",
+			req:       enrollRequest{Hostname: "Phone\u0130.local", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname latin small e with acute",
+			req:       enrollRequest{Hostname: "caf\u00e9.local", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
+			name:      "hostname zero-width space",
+			req:       enrollRequest{Hostname: "a\u200Bb", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "hostname",
+		},
+		{
 			name:      "hostname leading hyphen",
 			req:       enrollRequest{Hostname: "-foo", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
 			wantField: "hostname",
@@ -218,6 +238,18 @@ func TestValidateEnrollRequest(t *testing.T) {
 			wantField: "os_arch",
 		},
 		{
+			// Cf format chars (ZWSP, BOM, ...) are not Cc so unicode.IsControl
+			// misses them — the predicate also has to require IsPrint.
+			name:      "os_arch with zero-width space",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm\u200B64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "os_arch",
+		},
+		{
+			name:      "os_arch with bom",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm\uFEFF64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+			wantField: "os_arch",
+		},
+		{
 			name:      "empty app_version",
 			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "", WGPublicKey: validWGKey},
 			wantField: "app_version",
@@ -230,6 +262,16 @@ func TestValidateEnrollRequest(t *testing.T) {
 		{
 			name:      "app_version with null byte",
 			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0\x00.0", WGPublicKey: validWGKey},
+			wantField: "app_version",
+		},
+		{
+			name:      "app_version with zero-width space",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "1.0\u200B.0", WGPublicKey: validWGKey},
+			wantField: "app_version",
+		},
+		{
+			name:      "app_version with bom",
+			req:       enrollRequest{Hostname: "iphone", OSPlatform: "ios", OSArch: "arm64", AppVersion: "\uFEFF1.0.0", WGPublicKey: validWGKey},
 			wantField: "app_version",
 		},
 		{
@@ -474,6 +516,127 @@ func TestHandleDisconnectStoreFailure(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestValidateWGPublicKey_RejectsAllZeros(t *testing.T) {
+	t.Parallel()
+	// The all-zeros (32-byte) key is the X25519 identity / order-1 point.
+	// Pre-2026 fixtures used this as a "validation-passing" stand-in, which
+	// also enabled a global pre-registration DoS (devices.wg_public_key is
+	// globally UNIQUE).
+	const allZerosKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	err := validateWGPublicKey(allZerosKey)
+	if err == nil {
+		t.Fatalf("expected validation error for all-zeros wg key, got nil")
+	}
+	var verr *enrollValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("expected *enrollValidationError, got %T (%v)", err, err)
+	}
+	if verr.Field != "wg_public_key" {
+		t.Fatalf("field = %q, want wg_public_key", verr.Field)
+	}
+	if !strings.Contains(verr.Reason, "low-order") {
+		t.Fatalf("reason = %q, want it to mention low-order", verr.Reason)
+	}
+}
+
+func TestValidateWGPublicKey_RejectsKnownLowOrderPoint(t *testing.T) {
+	t.Parallel()
+	// All 13 canonical Curve25519 low-order representatives (incl. high-bit
+	// variants per RFC 7748 §5) must be rejected.
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"order2 one", "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+		{"order2 one high bit", "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA="},
+		{"order8 p1", "4Ot6fDtBuK4WVuP68Z/EatoJjeucMrH9hmIFFl9JuAA="},
+		{"order8 p1 high bit", "4Ot6fDtBuK4WVuP68Z/EatoJjeucMrH9hmIFFl9JuIA="},
+		{"order8 p2", "X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEVc="},
+		{"order8 p2 high bit", "X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEdc="},
+		{"p-1", "7P///////////////////////////////////////38="},
+		{"p-1 high bit", "7P////////////////////////////////////////8="},
+		{"p", "7f///////////////////////////////////////38="},
+		{"p high bit", "7f////////////////////////////////////////8="},
+		{"p+1", "7v///////////////////////////////////////38="},
+		{"p+1 high bit", "7v////////////////////////////////////////8="},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateWGPublicKey(tc.key)
+			if err == nil {
+				t.Fatalf("expected rejection for %s, got nil", tc.name)
+			}
+			var verr *enrollValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("expected *enrollValidationError, got %T (%v)", err, err)
+			}
+			if verr.Field != "wg_public_key" {
+				t.Fatalf("field = %q, want wg_public_key", verr.Field)
+			}
+			if !strings.Contains(verr.Reason, "low-order") {
+				t.Fatalf("reason = %q, want it to mention low-order", verr.Reason)
+			}
+		})
+	}
+}
+
+// fakeDisconnectorWithStatus records what status the device rows would be
+// in after the DB commit. Real production rollback is impossible once the
+// commit has happened, so this stub flips the row to "revoked" before
+// returning — and the handler must NOT unwind that even when SyncAll fails.
+type fakeDisconnectorWithStatus struct {
+	deviceIDs []string
+	rowStatus map[string]string
+}
+
+func (f *fakeDisconnectorWithStatus) DisconnectMobileDevices(_ context.Context, _ string) ([]string, error) {
+	if f.rowStatus == nil {
+		f.rowStatus = make(map[string]string)
+	}
+	for _, id := range f.deviceIDs {
+		f.rowStatus[id] = "revoked"
+	}
+	return f.deviceIDs, nil
+}
+
+func TestHandleDisconnectSyncFailureReturns503(t *testing.T) {
+	cfg := config.Config{InternalSessionSecret: "test-secret"}
+	syncSentinel := errors.New("wg sync exploded")
+	hub := &fakeHub{syncAllErr: syncSentinel}
+	disc := &fakeDisconnectorWithStatus{deviceIDs: []string{"dev-xyz"}}
+
+	h := New(nil, nil, cfg, nil, nil, hub, fakeLimiter{
+		decision: ratelimit.Decision{Allowed: true},
+	})
+	h.disconnector = disc
+
+	router := chi.NewRouter()
+	h.Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
+	req.Header.Set("Authorization", "Bearer "+signedToken(t, cfg.InternalSessionSecret, "user-9"))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+	if hub.syncAllCalls != 1 {
+		t.Fatalf("hub.SyncAll calls = %d, want 1", hub.syncAllCalls)
+	}
+	// DB commit already happened — the revoked status must persist. The
+	// 503 just tells the client to retry so SyncAll can finish.
+	if got := disc.rowStatus["dev-xyz"]; got != "revoked" {
+		t.Fatalf("device row status = %q, want revoked (commit must persist)", got)
+	}
+	// Response body must carry retry guidance.
+	if !strings.Contains(rec.Body.String(), "retry to fully tear down") {
+		t.Fatalf("body missing retry guidance: %s", rec.Body.String())
 	}
 }
 

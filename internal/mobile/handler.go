@@ -230,9 +230,20 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	// A single SyncAll reconciles every retired device in one pass — loading
 	// peers per-device fans out to N full reconciliations because retired
 	// devices no longer match the `status='active'` filter in loadPeer.
+	//
+	// The DB commit has already happened by the time we get here, so we cannot
+	// roll the revocation back. There is no periodic reconcile in this
+	// codebase (SyncAll only runs at hub Init / enroll / disconnect / key
+	// rotation), so a sync failure leaves the wireguard hub still routing for
+	// devices that are revoked in the database. Surface 503 so the client
+	// retries — the next attempt rate-limit-permitting will rerun SyncAll
+	// (the DB rows are already revoked, so this is idempotent).
 	if h.hub != nil && len(deviceIDs) > 0 {
 		if syncErr := h.hub.SyncAll(ctx); syncErr != nil {
 			h.logger.Error("sync wireguard hub after mobile disconnect", zap.Error(syncErr), zap.Int("device_count", len(deviceIDs)))
+			h.auditMobileDisconnect(ctx, r, claims.Sub, deviceIDs)
+			writeError(w, http.StatusServiceUnavailable, "device revoked in database but wireguard sync failed; retry to fully tear down")
+			return
 		}
 	}
 
