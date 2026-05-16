@@ -142,8 +142,8 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 		}
 		addr, err := netip.ParseAddr(entry)
 		if err != nil {
-			// Unparseable hop in an otherwise trusted chain: fall back to
-			// the peer rather than trusting anything to its left.
+			// Unparseable hop — the chain is genuinely broken, fall back to peer
+			// rather than trusting anything to its left.
 			return peer.Unmap().String()
 		}
 		// Zoned IPv6 (e.g. fe80::1%eth0) round-trips through String() with
@@ -153,17 +153,24 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 		if addr.Zone() != "" {
 			addr = addr.WithZone("")
 		}
+		// Canonicalize before class checks: 4in6 forms such as ::ffff:0.0.0.0
+		// and ::ffff:255.255.255.255 have IsUnspecified()==false and fail the
+		// family-strict broadcast equality, bypassing the checks below without
+		// this step. Consistent with ipInPrefixes which also Unmaps.
+		addr = addr.Unmap()
 		// Reject addresses that cannot belong to a real client: unspecified
 		// (0.0.0.0 / ::), multicast (224.0.0.0/4, ff00::/8), link-local
 		// unicast (169.254.0.0/16, fe80::/10), the IPv4 limited broadcast
 		// (255.255.255.255), and the deprecated IPv6 site-local range
 		// (fec0::/10, RFC 3879). Any of these in an XFF header is either a
 		// misconfiguration or an attempt to pin callers onto a shared
-		// rate-limit bucket / pollute audit rows. Treat as unparseable and
-		// fall back to the peer.
+		// rate-limit bucket / pollute audit rows. Skip this hop and keep
+		// walking; returning peer here would let an attacker collapse
+		// rate-limit/audit onto the peer by injecting any such value into
+		// a misconfigured chain.
 		if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() ||
 			addr == v4Broadcast || ipv6SiteLocal.Contains(addr) {
-			return peer.Unmap().String()
+			continue
 		}
 		if ipInPrefixes(addr, trusted) {
 			continue

@@ -306,9 +306,11 @@ func TestClientIP_4in6TrustedPrefixHonored(t *testing.T) {
 
 // TestClientIP_RejectsBogusAddressClasses is a table-driven test asserting that
 // addresses which cannot belong to a real client (unspecified, multicast,
-// link-local unicast, and the IPv4 limited broadcast) are treated like an
-// unparseable hop and cause a fallback to the peer address, never returned
-// directly regardless of trust chain position.
+// link-local unicast, and the IPv4 limited broadcast) are skipped during the
+// walk, never returned directly regardless of trust chain position. When the
+// bogus entry is the only hop the walk falls back to the trusted peer.
+// The 4in6 forms ::ffff:0.0.0.0 and ::ffff:255.255.255.255 are included to
+// cover the Unmap-before-class-check fix (Fix 2).
 func TestClientIP_RejectsBogusAddressClasses(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -322,6 +324,8 @@ func TestClientIP_RejectsBogusAddressClasses(t *testing.T) {
 		{"link-local unicast v6", "fe80::1"},
 		{"limited broadcast", "255.255.255.255"},
 		{"site-local v6", "fec0::1"},
+		{"4in6 unspecified", "::ffff:0.0.0.0"},
+		{"4in6 broadcast", "::ffff:255.255.255.255"},
 	}
 	trusted := mustPrefixes(t, "127.0.0.0/8")
 	for _, tc := range cases {
@@ -358,5 +362,87 @@ func TestClientIP_MultipleXFFHeadersJoined(t *testing.T) {
 	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8", "10.0.0.0/8"))
 	if got != "203.0.113.50" {
 		t.Fatalf("multiple XFF headers must be joined and right-walked; got %q", got)
+	}
+}
+
+// TestClientIP_BogusClassEntryDoesNotShortCircuitWalk is a regression test for
+// the HIGH fix: a class-rejected entry (fec0::1, site-local) in the middle of
+// a chain must be skipped — not cause an early return of the peer — so the walk
+// continues leftward and surfaces the real client IP.
+//
+// Trusted: 127.0.0.0/8, 10.0.0.0/8. Peer: 127.0.0.1:54321 (trusted).
+// XFF: "203.0.113.42, fec0::1, 10.0.0.5"
+//   - 10.0.0.5 is trusted → skip.
+//   - fec0::1 is site-local (bogus class) → skip (not return peer).
+//   - 203.0.113.42 is the first non-trusted entry → return it.
+func TestClientIP_BogusClassEntryDoesNotShortCircuitWalk(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42, fec0::1, 10.0.0.5")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8", "10.0.0.0/8"))
+	if got == "127.0.0.1" {
+		t.Fatalf("class-rejected hop must not short-circuit the walk to peer; got %q (want 203.0.113.42)", got)
+	}
+	if got != "203.0.113.42" {
+		t.Fatalf("expected 203.0.113.42 after skipping bogus-class hop; got %q", got)
+	}
+}
+
+// TestClientIP_BogusClassEntryAtRightmostSkipped is a second regression test
+// for the HIGH fix covering the ordering where the bogus entry sits between the
+// real hops.
+//
+// Trusted: 10.0.0.0/8. Peer: 10.0.0.1:443 (trusted).
+// XFF: "203.0.113.42, fec0::1, 10.0.0.5"
+//   - 10.0.0.5 is trusted → skip.
+//   - fec0::1 is site-local (bogus class) → skip.
+//   - 203.0.113.42 is non-trusted → return it.
+func TestClientIP_BogusClassEntryAtRightmostSkipped(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:443"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42, fec0::1, 10.0.0.5")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "10.0.0.0/8"))
+	if got != "203.0.113.42" {
+		t.Fatalf("expected 203.0.113.42 after skipping bogus-class and trusted hops; got %q", got)
+	}
+}
+
+// TestClientIP_4in6UnspecifiedRejected is a regression test for the MEDIUM fix:
+// the 4in6 form ::ffff:0.0.0.0 must be caught by the class check after Unmap
+// and skipped, not surfaced as "0.0.0.0".
+//
+// When it is the only XFF hop the walk exhausts the chain and falls back to peer.
+func TestClientIP_4in6UnspecifiedRejected(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "::ffff:0.0.0.0")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8"))
+	if got == "0.0.0.0" || got == "::ffff:0.0.0.0" {
+		t.Fatalf("4in6 unspecified must not be returned; got %q", got)
+	}
+	if got != "127.0.0.1" {
+		t.Fatalf("expected peer fallback 127.0.0.1 after skipping 4in6 unspecified; got %q", got)
+	}
+}
+
+// TestClientIP_4in6BroadcastRejected is a regression test for the MEDIUM fix:
+// the 4in6 form ::ffff:255.255.255.255 must be caught by the broadcast check
+// after Unmap and skipped, not surfaced as "255.255.255.255".
+//
+// When it is the only XFF hop the walk exhausts the chain and falls back to peer.
+func TestClientIP_4in6BroadcastRejected(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Forwarded-For", "::ffff:255.255.255.255")
+
+	got := audit.ClientIP(req, mustPrefixes(t, "127.0.0.0/8"))
+	if got == "255.255.255.255" || got == "::ffff:255.255.255.255" {
+		t.Fatalf("4in6 broadcast must not be returned; got %q", got)
+	}
+	if got != "127.0.0.1" {
+		t.Fatalf("expected peer fallback 127.0.0.1 after skipping 4in6 broadcast; got %q", got)
 	}
 }

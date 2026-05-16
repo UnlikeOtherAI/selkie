@@ -140,7 +140,7 @@ func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 				continue
 			}
 			if bits < minNormalized4in6Bits {
-				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing 4in6 prefix %q; normalized v4 mask /%d trusts too wide a range (min /%d)", entry, bits, minNormalized4in6Bits))
+				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing 4in6 prefix %q; normalized v4 mask /%d trusts too wide a range (min /%d). Use the canonical IPv4 CIDR (e.g. 10.0.0.0/8, 127.0.0.1/32) instead.", entry, bits, minNormalized4in6Bits))
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: 4in6 prefix %q normalized to canonical IPv4 form; configure the IPv4 CIDR directly to silence this warning", entry))
