@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/unlikeotherai/selkie/internal/audit"
 )
@@ -444,5 +445,89 @@ func TestClientIP_4in6BroadcastRejected(t *testing.T) {
 	}
 	if got != "127.0.0.1" {
 		t.Fatalf("expected peer fallback 127.0.0.1 after skipping 4in6 broadcast; got %q", got)
+	}
+}
+
+func TestRateLimitIP_EmptyInput(t *testing.T) {
+	if got := audit.RateLimitIP(""); got != "" {
+		t.Fatalf("empty input must return empty string; got %q", got)
+	}
+}
+
+func TestRateLimitIP_UnparseableReturnsEmpty(t *testing.T) {
+	// Junk inputs must not become a rate-limit key — otherwise an attacker
+	// that controls r.RemoteAddr (or an upstream XFF) can choose the bucket
+	// every other caller is pinned onto.
+	cases := []string{
+		"not-an-ip",
+		"127.0.0.1; DROP TABLE users",
+		"\x00\x01",
+		"   ",
+	}
+	for _, c := range cases {
+		if got := audit.RateLimitIP(c); got != "" {
+			t.Fatalf("unparseable input %q must return empty; got %q", c, got)
+		}
+	}
+}
+
+func TestRateLimitIP_IPv4Unchanged(t *testing.T) {
+	if got := audit.RateLimitIP("198.51.100.7"); got != "198.51.100.7" {
+		t.Fatalf("IPv4 must be returned unchanged; got %q", got)
+	}
+}
+
+func TestRateLimitIP_IPv6CollapsedToSlash64(t *testing.T) {
+	cases := map[string]string{
+		"2001:db8::1":          "2001:db8::/64",
+		"2001:db8::abcd:ef01":  "2001:db8::/64",
+		"2001:db8:1:2:3:4:5:6": "2001:db8:1:2::/64",
+		"fe80::1":              "fe80::/64",
+	}
+	for in, want := range cases {
+		got := audit.RateLimitIP(in)
+		if got != want {
+			t.Fatalf("RateLimitIP(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+func TestRateLimitIP_4in6CollapsesToIPv4(t *testing.T) {
+	// An IPv4-mapped IPv6 address must aggregate onto the IPv4 bucket, not
+	// onto a fresh /64. Otherwise the same caller arriving as ::ffff:a.b.c.d
+	// vs a.b.c.d would land on two different limiter buckets.
+	got := audit.RateLimitIP("::ffff:192.0.2.1")
+	if got != "192.0.2.1" {
+		t.Fatalf("4in6 must unmap to IPv4 bucket; got %q", got)
+	}
+}
+
+func TestTruncateUserAgent_ShortPassesThrough(t *testing.T) {
+	ua := "Mozilla/5.0"
+	if got := audit.TruncateUserAgent(ua); got != ua {
+		t.Fatalf("short UA must pass through unchanged; got %q", got)
+	}
+}
+
+func TestTruncateUserAgent_BoundsLongInput(t *testing.T) {
+	huge := strings.Repeat("a", 5000)
+	got := audit.TruncateUserAgent(huge)
+	if len(got) > audit.MaxUserAgentBytes {
+		t.Fatalf("truncation must cap at MaxUserAgentBytes=%d; got len=%d", audit.MaxUserAgentBytes, len(got))
+	}
+}
+
+func TestTruncateUserAgent_StripsPartialUTF8AtBoundary(t *testing.T) {
+	// Build a UA where the truncation boundary falls inside a 3-byte rune.
+	// MaxUserAgentBytes is 512. Pad with ASCII to 511 bytes, then place a
+	// 3-byte rune (\u20AC = 0xE2 0x82 0xAC) that straddles the boundary.
+	prefix := strings.Repeat("a", audit.MaxUserAgentBytes-1)
+	straddling := prefix + "\u20AC" + "tail"
+	got := audit.TruncateUserAgent(straddling)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated UA must be valid UTF-8; got %q", got)
+	}
+	if len(got) > audit.MaxUserAgentBytes {
+		t.Fatalf("truncated UA exceeded cap; got len=%d", len(got))
 	}
 }

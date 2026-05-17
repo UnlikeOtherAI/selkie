@@ -64,27 +64,32 @@ func main() {
 		logger.Warn("config warning", zap.String("warning", w))
 	}
 
+	// Register sigCh UP FRONT so SIGTERM/SIGINT never hits default
+	// disposition. signal.NotifyContext alone is insufficient for the
+	// second-signal accelerator: after its internal Stop() runs there is a
+	// window during which a freshly-registered channel does not exist yet,
+	// and a SIGTERM arriving in that window kills the process via the
+	// runtime default. By keeping sigCh registered for the lifetime of
+	// main, every signal is delivered to at least one channel.
+	//
+	// Go's signal package delivers each signal to every registered channel,
+	// so the FIRST signal also lands in sigCh. We discard that one — sigCtx
+	// has already canceled and the graceful path is running — and watch
+	// for the SECOND signal to trigger force-shutdown.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Second-signal accelerator: signal.NotifyContext only cancels sigCtx
-	// once, so a second Ctrl-C or SIGTERM during the 30s shutdown drain
-	// would otherwise be a no-op. forceShutdown is closed on the second
-	// signal so runServe can cancel its shutdown context and force-quit.
-	//
-	// signal.Notify must be registered AFTER sigCtx fires. Go delivers
-	// signals to every registered channel, so registering ch up front
-	// would cause the FIRST SIGTERM to be buffered into ch as well,
-	// collapsing the second-signal escalator into immediate force-quit
-	// on the first signal.
 	forceShutdown := make(chan struct{})
 	go func() {
-		<-sigCtx.Done()
-		ch := make(chan os.Signal, 1)
-		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-		defer signal.Stop(ch)
+		// First signal: graceful path; sigCtx handles it.
+		<-sigCh
+		// Second signal during shutdown drain: force-close.
 		select {
-		case <-ch:
+		case <-sigCh:
 			close(forceShutdown)
 		case <-time.After(2 * shutdownGrace):
 			// Process has exited cleanly via normal drain; never fired.
@@ -279,7 +284,7 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	logger.Info("listening", zap.Int("port", boundPort))
 
 	// serveErr distinguishes "clean shutdown initiated by SIGTERM" (nil)
-	// from "Serve returned spontaneously before shutdown" (errSilentServeExit).
+	// from "Serve returned spontaneously before shutdown" (errPrematureServerClose).
 	// http.ErrServerClosed only occurs after srv.Shutdown, so seeing it on
 	// the goroutine path before sigCtx fires would mean a third party
 	// called srv.Close — that is a defect worth surfacing.
@@ -324,7 +329,17 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	if err := srv.Shutdown(shutCtx); err != nil { //nolint:contextcheck // intentionally new context for graceful shutdown
 		return err
 	}
-	return <-errCh
+	// Bound the wait for the serve goroutine. srv.Close() is invoked from
+	// the force-shutdown path above, but a misbehaving handler that ignores
+	// connection close (e.g. an SSE goroutine still writing into a closed
+	// socket) can park srv.Serve indefinitely. Cap at shutdownGrace so
+	// systemd/k8s SIGKILL is not the only force that unblocks main.
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(shutdownGrace):
+		return errors.New("server did not exit within shutdown grace after Shutdown returned")
+	}
 }
 
 func buildLogger(level string) *zap.Logger {

@@ -359,7 +359,7 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 			TargetTable: "devices",
 			TargetID:    &deviceID,
 			RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
-			UserAgent:   r.UserAgent(),
+			UserAgent:   audit.TruncateUserAgent(r.UserAgent()),
 		}); auditErr != nil {
 			h.logger.Error("audit device.revoke", zap.Error(auditErr))
 		}

@@ -53,7 +53,7 @@ func (h *CallbackHandler) ServeDevLogin(w http.ResponseWriter, r *http.Request) 
 			TargetTable: "users",
 			TargetID:    &userID,
 			RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
-			UserAgent:   r.UserAgent(),
+			UserAgent:   audit.TruncateUserAgent(r.UserAgent()),
 		}); auditErr != nil {
 			h.logger.Error("audit dev-login", zap.Error(auditErr))
 		}

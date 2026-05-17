@@ -231,14 +231,17 @@ func nullIfEmpty(s string) *string {
 // granularity; only the rate-limit keys aggregate at /64.
 //
 // An empty or unparseable input returns an empty string so callers can
-// short-circuit without keying on a junk bucket.
+// short-circuit without keying on a junk bucket. Returning the raw input
+// on parse failure would let an attacker pick an arbitrary key string
+// (anything that round-trips through r.RemoteAddr) and pin every other
+// caller onto a bucket of their choice.
 func RateLimitIP(ip string) string {
 	if ip == "" {
 		return ""
 	}
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
-		return ip
+		return ""
 	}
 	addr = addr.Unmap()
 	if addr.Is4() {
@@ -246,7 +249,25 @@ func RateLimitIP(ip string) string {
 	}
 	prefix, err := addr.Prefix(64)
 	if err != nil {
-		return addr.String()
+		return ""
 	}
 	return prefix.Masked().String()
+}
+
+// MaxUserAgentBytes caps the length of the User-Agent string written to
+// audit rows. Go's default http.Server MaxHeaderBytes is 1 MiB; without
+// truncation a crafted UA can bloat audit_events rows at attacker-chosen
+// scale (and an invalid-UTF8 tail can fail the Postgres INSERT outright).
+const MaxUserAgentBytes = 512
+
+// TruncateUserAgent caps a User-Agent string at MaxUserAgentBytes and
+// strips any partial multi-byte rune left at the tail. Callers building
+// audit.Event values from r.UserAgent() should pass it through this
+// helper so audit row sizes stay bounded and the Postgres INSERT cannot
+// be killed by invalid UTF-8 at the truncation boundary.
+func TruncateUserAgent(ua string) string {
+	if len(ua) <= MaxUserAgentBytes {
+		return ua
+	}
+	return strings.ToValidUTF8(ua[:MaxUserAgentBytes], "")
 }

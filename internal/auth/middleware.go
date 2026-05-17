@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -40,10 +41,12 @@ const (
 	// rejectAuditTimeout bounds the audit write so a Postgres stall on the
 	// reject path cannot pile up goroutines proportional to the attack rate.
 	rejectAuditTimeout = 2 * time.Second
-	// maxAuditUserAgent caps the User-Agent length copied into the audit
-	// row. Go's default MaxHeaderBytes is 1MiB; without truncation a
-	// crafted UA can bloat the audit table by ~1MB/row at the attack rate.
-	maxAuditUserAgent = 512
+	// jwtIATSkew caps how far into the future an iat ("issued at") claim is
+	// allowed to drift. golang-jwt's default leeway is applied symmetrically
+	// to nbf/exp but iat is otherwise unchecked — a token minted with a far-
+	// future iat would parse successfully even though something is clearly
+	// wrong with the issuer's clock or the token itself.
+	jwtIATSkew = JWTLeeway
 )
 
 // Claims holds the authenticated user identity extracted from a JWT.
@@ -87,16 +90,7 @@ func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limi
 		if auditor != nil {
 			ip := audit.ClientIP(r, trusted)
 			if shouldAuditReject(r.Context(), limiter, ip) {
-				ua := r.UserAgent()
-				if len(ua) > maxAuditUserAgent {
-					// Truncate on a byte boundary then strip any partial
-					// multi-byte rune at the tail. Without this, a UA that
-					// happens to straddle a UTF-8 boundary at offset 512
-					// becomes invalid UTF-8 and Postgres rejects the audit
-					// INSERT — the very write the truncation was meant to
-					// keep cheap.
-					ua = strings.ToValidUTF8(ua[:maxAuditUserAgent], "")
-				}
+				ua := audit.TruncateUserAgent(r.UserAgent())
 				// Detach from r.Context() so a client TCP-RST mid-write
 				// (typical credential-stuffer signature) cannot suppress
 				// the audit row — the most suspicious callers must still
@@ -118,65 +112,92 @@ func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limi
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authorization := strings.TrimSpace(r.Header.Get("Authorization"))
-			if authorization == "" {
-				reject(w, r, "missing_authorization")
+			claims, reason := authenticateBearer(r.Header.Get("Authorization"), secret)
+			if reason != "" {
+				reject(w, r, reason)
 				return
 			}
-
-			tokenString := strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
-			if tokenString == authorization || tokenString == "" {
-				reject(w, r, "missing_bearer_scheme")
-				return
-			}
-
-			parsedClaims := &sessionClaims{}
-			token, err := jwt.ParseWithClaims(tokenString, parsedClaims, func(token *jwt.Token) (any, error) {
-				if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
-					return nil, jwt.ErrTokenSignatureInvalid
-				}
-
-				return secret, nil
-			},
-				jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-				jwt.WithIssuer(Issuer),
-				jwt.WithExpirationRequired(),
-				jwt.WithLeeway(JWTLeeway),
-			)
-			if err != nil || !token.Valid || parsedClaims.Subject == "" {
-				reject(w, r, "invalid_token")
-				return
-			}
-
-			claims := Claims{
-				Sub:      parsedClaims.Subject,
-				IsSuper:  parsedClaims.IsSuper,
-				Audience: []string(parsedClaims.Audience),
-			}
-			if !claims.HasAudience(AudienceAdmin) && !claims.HasAudience(AudienceMobile) {
-				reject(w, r, "unrecognized_audience")
-				return
-			}
-
 			ctx := context.WithValue(r.Context(), claimsContextKey, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
+// authenticateBearer parses and validates the Authorization header. It returns
+// the resolved Claims on success, or a non-empty reason string identifying the
+// failure mode for audit logging. Splitting this out of Middleware keeps the
+// request handler short and its cognitive complexity bounded.
+func authenticateBearer(authorization string, secret []byte) (Claims, string) {
+	authorization = strings.TrimSpace(authorization)
+	if authorization == "" {
+		return Claims{}, "missing_authorization"
+	}
+	tokenString := strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+	if tokenString == authorization || tokenString == "" {
+		return Claims{}, "missing_bearer_scheme"
+	}
+
+	parsedClaims := &sessionClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, parsedClaims, func(token *jwt.Token) (any, error) {
+		if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, jwt.ErrTokenSignatureInvalid
+		}
+		return secret, nil
+	},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(Issuer),
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(JWTLeeway),
+	)
+	if err != nil || !token.Valid || parsedClaims.Subject == "" {
+		return Claims{}, "invalid_token"
+	}
+	// Reject tokens whose iat is implausibly in the future. jwt/v5 applies
+	// leeway to nbf/exp but does not constrain iat, so a token minted with
+	// iat = now + 10y would otherwise be honored for its full exp window.
+	// Treat a missing iat as iat=0 (epoch), which trivially passes — only
+	// future drift is interesting.
+	if iat := parsedClaims.IssuedAt; iat != nil && iat.After(time.Now().Add(jwtIATSkew)) {
+		return Claims{}, "iat_in_future"
+	}
+
+	claims := Claims{
+		Sub:      parsedClaims.Subject,
+		IsSuper:  parsedClaims.IsSuper,
+		Audience: []string(parsedClaims.Audience),
+	}
+	if !claims.HasAudience(AudienceAdmin) && !claims.HasAudience(AudienceMobile) {
+		return Claims{}, "unrecognized_audience"
+	}
+	return claims, ""
+}
+
 // shouldAuditReject consults the rate limiter to decide whether the current
-// reject should produce an audit row. When the limiter is nil (dev mode
-// without Redis and without the memory fallback) or the resolved IP is empty
-// (unparseable peer — already a red flag) we always audit. Limiter errors
-// are treated as "always audit" rather than "always drop": a working audit
-// trail during a Redis outage beats silent attacker activity.
+// reject should produce an audit row.
+//
+// Decision tree:
+//   - limiter is nil (dev mode without Redis and without the memory fallback)
+//     or the resolved IP is empty (unparseable peer — already a red flag):
+//     always audit; the configuration is "no rate limiting available", which
+//     is fine because the volume in that mode is small.
+//   - limiter returns ErrMemoryLimiterOverloaded: drop the audit row. The
+//     limiter is at its bucket cap, meaning the working-set of distinct
+//     attacker IPs has already saturated it. Fail-open here would let that
+//     attacker keep amplifying into one audit INSERT per request, defeating
+//     the entire purpose of the cap.
+//   - any other limiter error (Redis transient outage, context deadline):
+//     audit. A working audit trail during a Redis blip beats silent attacker
+//     activity, and these errors are bounded in volume by Redis health.
 func shouldAuditReject(ctx context.Context, limiter ratelimit.Limiter, ip string) bool {
 	if limiter == nil || ip == "" {
 		return true
 	}
 	decision, err := limiter.Allow(ctx, ratelimit.Key("auth", "reject", "ip", audit.RateLimitIP(ip)), rejectAuditLimit, rejectAuditWindow)
 	if err != nil {
-		return true
+		// Fail-closed only when the in-memory limiter signals overload;
+		// every other error (Redis blip, context deadline) falls back to
+		// audit-on so the trail survives transient infrastructure issues.
+		return !errors.Is(err, ratelimit.ErrMemoryLimiterOverloaded)
 	}
 	return decision.Allowed
 }

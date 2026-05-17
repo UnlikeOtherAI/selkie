@@ -209,7 +209,7 @@ WHERE id = $3
 			TargetTable: "devices",
 			TargetID:    &deviceID,
 			RemoteIP:    sourceIP,
-			UserAgent:   r.UserAgent(),
+			UserAgent:   audit.TruncateUserAgent(r.UserAgent()),
 		}); auditErr != nil {
 			h.logger.Error("audit device.create", zap.Error(auditErr))
 		}

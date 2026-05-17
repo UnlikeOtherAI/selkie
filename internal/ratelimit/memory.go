@@ -17,16 +17,18 @@ const memorySweepEvery = 64
 // memoryMaxBuckets caps the bucket map at a hard upper bound so a burst of
 // distinct keys within a single window (faster than memorySweepEvery and
 // before any expiry) cannot drive the process to OOM. When the cap is hit
-// we refuse the request with errMemoryLimiterOverloaded instead of allocating
+// we refuse the request with ErrMemoryLimiterOverloaded instead of allocating
 // further; the caller treats this as "rate limiter unavailable" rather than
 // fail-open, preserving the security posture. 100k buckets ≈ a few MB of
 // resident memory, far below any realistic ulimit.
 const memoryMaxBuckets = 100_000
 
-// errMemoryLimiterOverloaded is returned when the bucket map is at capacity
-// and the incoming key is not already tracked. Exported via Limiter.Allow's
-// error so callers can decide how to handle the soft-fail.
-var errMemoryLimiterOverloaded = errors.New("memory rate limiter overloaded")
+// ErrMemoryLimiterOverloaded is returned when the bucket map is at capacity
+// and the incoming key is not already tracked. Callers that gate side
+// effects on Allow (audit writes, request acceptance) can use errors.Is
+// against this sentinel to distinguish "limiter at capacity, fail closed"
+// from other transient limiter errors where fail-open may be acceptable.
+var ErrMemoryLimiterOverloaded = errors.New("memory rate limiter overloaded")
 
 // MemoryLimiter is an in-memory implementation of Limiter intended for
 // development environments where Redis is not available. Counters are kept in
@@ -82,7 +84,7 @@ func (l *MemoryLimiter) Allow(_ context.Context, key string, limit int64, window
 		// so reaching the cap means the live working set itself is too
 		// large — refusing is the correct response.
 		if !ok && len(l.buckets) >= memoryMaxBuckets {
-			return Decision{}, errMemoryLimiterOverloaded
+			return Decision{}, ErrMemoryLimiterOverloaded
 		}
 		b = &memoryBucket{count: 0, expireAt: now.Add(window)}
 		l.buckets[key] = b

@@ -166,7 +166,17 @@ func (h *CallbackHandler) ServeMobileHandoffExchange(w http.ResponseWriter, r *h
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.RateLimitIP(audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)), ratelimit.HashToken(handoffCode)), mobileHandoffExchangeLimit, mobileHandoffExchangeWindow) {
+	// Cache the resolved peer IP for the whole handler. audit.ClientIP walks
+	// the X-Forwarded-For chain on every call; on a hot exchange path the
+	// limiter key, the failure key, and the audit row would each recompute
+	// the same value, multiplying allocation cost under attack load.
+	sourceIP := audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)
+	// Bucket the exchange limit by source IP only. Including the handoff
+	// code in the key would give an attacker spamming many distinct codes
+	// a fresh bucket per attempt — effectively disabling the per-IP cap on
+	// exchange volume. The per-code failure counter (recordMobileHandoffFailure)
+	// already enforces "this specific code may not be probed forever".
+	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.RateLimitIP(sourceIP)), mobileHandoffExchangeLimit, mobileHandoffExchangeWindow) {
 		cancel()
 		return
 	}
@@ -199,7 +209,7 @@ RETURNING u.id, u.email, u.display_name, u.is_super
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			h.handleInvalidMobileHandoff(ctx, w, r, handoffCode)
+			h.handleInvalidMobileHandoff(ctx, w, sourceIP, handoffCode)
 		default:
 			if h.logger != nil {
 				h.logger.Error("consume mobile handoff code", zap.Error(err))
@@ -267,8 +277,8 @@ func (h *CallbackHandler) recordMobileHandoffFailure(ctx context.Context, source
 	return true, nil
 }
 
-func (h *CallbackHandler) handleInvalidMobileHandoff(ctx context.Context, w http.ResponseWriter, r *http.Request, handoffCode string) {
-	allowed, rateErr := h.recordMobileHandoffFailure(ctx, audit.ClientIP(r, h.cfg.TrustedProxyCIDRs), handoffCode)
+func (h *CallbackHandler) handleInvalidMobileHandoff(ctx context.Context, w http.ResponseWriter, sourceIP, handoffCode string) {
+	allowed, rateErr := h.recordMobileHandoffFailure(ctx, sourceIP, handoffCode)
 	if rateErr != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "rate limiting unavailable")
 		return
@@ -332,7 +342,7 @@ func (h *CallbackHandler) auditLogin(ctx context.Context, r *http.Request, userI
 		TargetTable: "users",
 		TargetID:    &userID,
 		RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
-		UserAgent:   r.UserAgent(),
+		UserAgent:   audit.TruncateUserAgent(r.UserAgent()),
 	}); auditErr != nil && h.logger != nil {
 		h.logger.Error("audit user.login", zap.Error(auditErr))
 	}

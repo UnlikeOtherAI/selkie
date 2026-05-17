@@ -314,7 +314,7 @@ func (h *Handler) auditMobileDisconnect(ctx context.Context, r *http.Request, us
 		TargetTable: "devices",
 		TargetID:    nil,
 		RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
-		UserAgent:   r.UserAgent(),
+		UserAgent:   audit.TruncateUserAgent(r.UserAgent()),
 		Metadata:    metadata,
 	}); auditErr != nil {
 		h.logger.Error("audit mobile disconnect", zap.Error(auditErr))

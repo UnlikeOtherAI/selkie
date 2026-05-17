@@ -94,7 +94,12 @@ type Config struct {
 func Load() Config {
 	trustedRaw := os.Getenv("TRUSTED_PROXY_CIDRS")
 	trusted, trustedWarnings := parseTrustedProxyCIDRs(trustedRaw)
-	devMode := getenvBool("DEV_MODE", false)
+	// DEV_MODE must be the literal string "true". The companion env
+	// CONFIRM_DEV_MODE is checked the same way (see below); accepting
+	// strconv.ParseBool's wider set ("1", "t", "T", "TRUE", "True") on one
+	// side while the other side checks a literal would let a typo on one
+	// variable disable the tripwire on the other half.
+	devMode := os.Getenv("DEV_MODE") == "true"
 	warnings := trustedWarnings
 	if len(trusted) == 0 && !devMode {
 		// Forgotten TRUSTED_PROXY_CIDRS in production collapses every
@@ -320,16 +325,4 @@ func (c Config) Validate() error {
 		return ErrMissingRedisPassword
 	}
 	return nil
-}
-
-func getenvBool(key string, fallback bool) bool {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }
