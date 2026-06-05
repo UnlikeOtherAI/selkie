@@ -204,6 +204,12 @@ jobs:
         working-directory: e2e
         run: pnpm exec playwright install --with-deps chromium
 
+      # global-setup.ts builds the admin UI (pnpm build in admin-ui/), which
+      # needs its dependencies installed first.
+      - name: install admin-ui deps
+        working-directory: admin-ui
+        run: pnpm install --frozen-lockfile
+
       - name: run e2e tests
         working-directory: e2e
         env:
