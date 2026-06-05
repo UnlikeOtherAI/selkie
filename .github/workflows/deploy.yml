@@ -1,12 +1,14 @@
 name: deploy
 
-# Auto-deploy to the shared Hetzner production host (178.105.82.46) after the
-# `ci` workflow succeeds on main. Decoupled from ci.yml so CI's
-# cancel-in-progress concurrency can never abort an in-flight deploy.
+# Auto-deploy to the shared Hetzner production host (178.105.82.46) on every
+# push to main. Deploy is intentionally NOT gated on the `ci` workflow: ci also
+# covers the iOS app (swiftlint) and other concerns that are orthogonal to the
+# server deploy, so gating would block deploys on unrelated failures. Safety
+# net: `docker compose up -d --build` only swaps containers after a successful
+# image build, so a commit that fails to compile leaves the running server
+# untouched; the final healthz check then fails the run loudly.
 on:
-  workflow_run:
-    workflows: ["ci"]
-    types: [completed]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -24,15 +26,9 @@ env:
 jobs:
   deploy:
     name: deploy to production
-    # Deploy only when the triggering CI run passed (or on a manual dispatch).
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Deploy the exact commit that passed CI (workflow_run), or the
-          # dispatched ref for a manual run.
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: configure ssh
         env:

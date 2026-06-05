@@ -117,14 +117,16 @@ All commands run as `root` on the host.
 
 ## Continuous deployment
 
-Pushes to `main` auto-deploy to the Hetzner host via GitHub Actions:
+Every push to `main` auto-deploys to the Hetzner host via
+`.github/workflows/deploy.yml` (`deploy`), with its own non-cancelling
+concurrency group so a rapid second push cannot abort an in-flight deploy. It
+can also be run manually from the Actions tab (`workflow_dispatch`).
 
-- `.github/workflows/ci.yml` (`ci`) runs lint + build/test + web + e2e.
-- `.github/workflows/deploy.yml` (`deploy`) is triggered by `workflow_run`
-  **after `ci` succeeds on `main`** (so broken commits never deploy). It is a
-  separate workflow with its own non-cancelling concurrency group so a rapid
-  second push cannot abort an in-flight deploy. It can also be run manually
-  from the Actions tab (`workflow_dispatch`).
+Deploy is **not** gated on the `ci` workflow: `ci` also covers the iOS app
+(swiftlint) and other concerns orthogonal to the server, so gating would block
+server deploys on unrelated failures. The safety net is the build itself —
+`docker compose up -d --build` only swaps containers after a successful image
+build, so a commit that fails to compile leaves the running server untouched.
 
 The deploy job: rsyncs the repo to `/srv/selkie` (preserving `.env`), runs
 `docker compose ... up -d --build`, prunes dangling images, then polls
