@@ -5,27 +5,29 @@ Identity is delegated to **`authentication.unlikeotherai.com`** (UOA —
 **not** a drop-in OIDC provider; the brief refers to OIDC generically, but UOA
 is a custom OAuth 2.0 service with a signed-config trust model.
 
-> ⚠️ **STATUS (2026-06-05): login does not work against live UOA yet.** The
-> contract described below (HS256 config JWT signed with a shared secret, no
-> JWKS, no PKCE) matches Selkie's current code in `internal/auth/` but **not**
-> the live UOA service. The authoritative LLM integration guide at
-> `https://authentication.unlikeotherai.com/llm` requires:
+> ✅ **STATUS (2026-06-05): the live UOA contract is implemented.** Selkie now
+> conforms to the authoritative guide at
+> `https://authentication.unlikeotherai.com/llm`:
 >
-> - **RS256** config JWT signed with Selkie's own RSA key, verified via a
->   published `GET /.well-known/jwks.json` whose host equals the `domain` claim
->   (Selkie currently signs HS256 and exposes no JWKS endpoint);
-> - **PKCE** (`code_challenge`/`code_verifier`, S256) on every flow — Selkie
->   has none;
-> - a one-time **superuser onboarding**: the first `/auth` call creates a
->   PENDING integration that an operator approves in UOA `/admin`, after which
->   a per-domain `client_secret` is claimed once. The `/auth/token` bearer is
->   `sha256(domain + clientSecret)` — Selkie already computes this correctly.
-> - access tokens are HS256 and **must be decoded, not verified** by the RP.
+> - the config JWT served at `/auth/uoa-config` is signed **RS256** with a
+>   `kid`, and the public key is published at `GET /.well-known/jwks.json`
+>   (host = the `domain` claim). Key material comes from `UOA_CONFIG_SIGNING_KEY`;
+> - the browser flow generates **PKCE** (`code_challenge`/`code_verifier`, S256),
+>   stashing the verifier in an HttpOnly cookie across the round-trip;
+> - the `/auth/token` exchange sends `code` + `redirect_url` + `code_verifier`
+>   with the `sha256(domain + client_secret)` bearer, and the returned access
+>   token is **decoded, not verified** (it is HS256 with UOA's own secret).
 >
-> Bringing SSO online is a tracked follow-up: implement RS256 config signing +
-> a JWKS endpoint + PKCE, then have the owner approve `api.selkie.live` in UOA
-> `/admin` and replace the placeholder `UOA_SHARED_SECRET` with the claimed
-> `client_secret`. Until then, the production `.env` carries a placeholder.
+> **Remaining go-live steps (human, one-time):** hitting login has registered
+> `api.selkie.live` as a **PENDING** integration. A UOA superuser must approve
+> it in `/admin`; the contact email then receives a one-time link to claim the
+> per-domain `client_secret`. Set `UOA_SHARED_SECRET=<client_secret>` in the
+> production `.env` and restart the server. Until that secret is set the
+> server-to-server token exchange will fail with `auth failed`.
+>
+> NOTE: the prose below this banner predates the implementation and still
+> describes the older HS256 assumption; treat the banner and
+> `internal/auth/{uoa_config,uoa,configjwt,callback}.go` as authoritative.
 
 ## Key differences from plain OIDC
 

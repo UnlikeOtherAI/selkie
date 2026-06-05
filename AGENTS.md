@@ -35,9 +35,10 @@ Do not run `find`, `ls`, or `cat` on any path above this directory.
 - Hosts: `admin.selkie.live`, `api.selkie.live`, `relay.selkie.live` → the host;
   `selkie.live` apex stays on Cloud Run. See `docs/deployment.md`.
 - Never start a second Caddy/Postgres or touch other projects' configs on the host.
-- **SSO is not yet functional against live UOA** — the implemented contract is
-  HS256 but UOA needs RS256 + JWKS + PKCE. See the banner in `docs/sso.md` and
-  `https://authentication.unlikeotherai.com/llm`.
+- **SSO** implements the live UOA contract (RS256 config JWT + `/.well-known/jwks.json`
+  + PKCE + decode-not-verify). `api.selkie.live` is a PENDING integration; go-live
+  needs a superuser to approve it in UOA `/admin` and `UOA_SHARED_SECRET` set to the
+  claimed `client_secret`. See `docs/sso.md` and `https://authentication.unlikeotherai.com/llm`.
 
 ## Writing files
 

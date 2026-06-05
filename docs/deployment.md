@@ -157,12 +157,19 @@ TRUSTED_PROXY_CIDRS=172.18.0.0/16,127.0.0.1/32
 
 ## SSO status
 
-SSO is delegated to `authentication.unlikeotherai.com`. The `/auth/uoa-config`
-endpoint serves, but **login does not yet work against live UOA**: the
-implemented config-JWT contract is HS256 while UOA requires RS256 + a published
-JWKS + PKCE + a one-time superuser onboarding. `UOA_SHARED_SECRET` in the
-production `.env` is a placeholder. See [sso.md](sso.md) for the gap and the
-remediation plan.
+SSO is delegated to `authentication.unlikeotherai.com` and the live UOA
+contract is **implemented** (RS256 config JWT + `/.well-known/jwks.json` + PKCE
++ decode-not-verify). Hitting login registers `api.selkie.live` as a PENDING
+integration. To finish go-live (one-time, human):
+
+1. A UOA superuser approves `api.selkie.live` in `/admin`.
+2. `UOA_CONTACT_EMAIL` receives a one-time link; claim the per-domain
+   `client_secret`.
+3. Set `UOA_SHARED_SECRET=<client_secret>` in `/srv/selkie/.env` and
+   `docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml restart server`.
+
+The RSA signing key lives in `UOA_CONFIG_SIGNING_KEY` (base64 PEM). See
+[sso.md](sso.md).
 
 ## DNS shape
 

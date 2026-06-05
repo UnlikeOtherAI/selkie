@@ -37,6 +37,11 @@ const (
 	oauthStateCookieName = "selkie_oauth_state"
 	oauthStateTTL        = 10 * time.Minute
 	oauthStateByteLen    = 32
+
+	// pkceVerifierCookieName holds the PKCE code_verifier across the UOA
+	// round-trip. It is HttpOnly + SameSite=Lax so it survives the top-level
+	// GET redirect back from UOA but is never readable by scripts.
+	pkceVerifierCookieName = "selkie_pkce_verifier"
 )
 
 // CallbackHandler handles the OAuth callback from UOA, upserting the user and issuing a session JWT.
@@ -56,6 +61,7 @@ func NewCallbackHandler(db *store.DB, cfg config.Config, auditor *audit.Logger, 
 // Mount registers the auth routes on the given router.
 func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Get("/auth/uoa-config", h.ServeUOAConfig)
+	r.Get("/.well-known/jwks.json", h.ServeJWKS)
 	r.Get("/auth/login", h.ServeLogin)
 	r.Get("/auth/callback", h.ServeCallback)
 	r.Get("/auth/mobile/callback", h.ServeMobileCallback)
@@ -77,8 +83,18 @@ func (h *CallbackHandler) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	verifier, challenge, err := newPKCE()
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Error("generate pkce", zap.Error(err))
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	setOAuthStateCookie(w, r, state)
-	http.Redirect(w, r, appendQueryParam(BuildAuthURL(), "state", state), http.StatusFound)
+	setPKCEVerifierCookie(w, r, verifier)
+	http.Redirect(w, r, appendQueryParam(BuildAuthURL(challenge), "state", state), http.StatusFound)
 }
 
 // ServeCallback processes the OAuth callback, exchanges the code, upserts the user, and redirects with a JWT.
@@ -86,11 +102,18 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 	if !h.verifyOAuthState(w, r) {
 		return
 	}
-	// State has served its CSRF purpose; clear immediately so a failed upstream
-	// exchange cannot leave a replayable cookie for the rest of the TTL window.
+	verifier := pkceVerifierFromCookie(r)
+	// State and verifier have served their purpose; clear immediately so a
+	// failed upstream exchange cannot leave replayable cookies for the rest of
+	// the TTL window.
 	clearOAuthStateCookie(w, r)
+	clearPKCEVerifierCookie(w, r)
+	if verifier == "" {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
 
-	userID, isSuper, uoaClaims, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"))
+	userID, isSuper, uoaClaims, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOARedirectURL, verifier)
 	if err != nil {
 		writeExchangeError(w, err)
 		return
@@ -120,7 +143,9 @@ func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	userID, _, _, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"))
+	verifier := pkceVerifierFromCookie(r)
+	clearPKCEVerifierCookie(w, r)
+	userID, _, _, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOAMobileRedirectURL, verifier)
 	if err != nil {
 		writeExchangeError(w, err)
 		return
@@ -290,12 +315,12 @@ func (h *CallbackHandler) handleInvalidMobileHandoff(ctx context.Context, w http
 	writeJSONError(w, http.StatusUnauthorized, "invalid mobile handoff code")
 }
 
-func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code string) (string, bool, *UOAClaims, error) {
+func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redirectURL, codeVerifier string) (string, bool, *UOAClaims, error) {
 	if strings.TrimSpace(code) == "" {
 		return "", false, nil, errMissingCode
 	}
 
-	uoaClaims, err := ExchangeCode(ctx, code)
+	uoaClaims, err := ExchangeCode(ctx, code, redirectURL, codeVerifier)
 	if err != nil {
 		return "", false, nil, errAuthFailed
 	}
@@ -532,6 +557,40 @@ func setOAuthStateCookie(w http.ResponseWriter, r *http.Request, state string) {
 		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+func setPKCEVerifierCookie(w http.ResponseWriter, r *http.Request, verifier string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     pkceVerifierCookieName,
+		Value:    verifier,
+		Path:     "/",
+		Expires:  time.Now().Add(oauthStateTTL),
+		MaxAge:   int(oauthStateTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearPKCEVerifierCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     pkceVerifierCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func pkceVerifierFromCookie(r *http.Request) string {
+	cookie, err := r.Cookie(pkceVerifierCookieName)
+	if err != nil || cookie == nil {
+		return ""
+	}
+	return strings.TrimSpace(cookie.Value)
 }
 
 func clearOAuthStateCookie(w http.ResponseWriter, r *http.Request) {

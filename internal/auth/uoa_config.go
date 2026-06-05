@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -75,11 +77,31 @@ func uoaAllowedSocialProviders(methods []string) []string {
 	return providers
 }
 
-// ServeUOAConfig returns the signed client configuration JWT consumed by UOA.
+// uoaJWKSURL derives the JWKS URL UOA fetches to verify the config JWT. Its
+// host must equal the `domain` claim, so it is built from the config URL host.
+func uoaJWKSURL(configURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(configURL))
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("UOA_CONFIG_URL must be absolute")
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/.well-known/jwks.json", nil
+}
+
+// ServeUOAConfig returns the RS256-signed client configuration JWT consumed by
+// UOA. It is signed with the RSA key published at /.well-known/jwks.json and
+// carries the onboarding fields (jwks_url, contact_email) UOA needs to
+// auto-discover and approve this integration.
 func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request) {
 	domain, err := uoaConfigDomain(h.cfg)
 	redirectURLs := uoaConfigRedirectURLs(*h)
-	if err != nil || strings.TrimSpace(h.cfg.UOAConfigURL) == "" || len(redirectURLs) == 0 || h.cfg.UOAAudience == "" || h.cfg.UOASharedSecret == "" {
+	jwksURL, jwksErr := uoaJWKSURL(h.cfg.UOAConfigURL)
+	contactEmail := strings.TrimSpace(h.cfg.UOAContactEmail)
+	if err != nil || jwksErr != nil || strings.TrimSpace(h.cfg.UOAConfigURL) == "" ||
+		len(redirectURLs) == 0 || strings.TrimSpace(h.cfg.UOAConfigSigningKeyPEM) == "" ||
+		contactEmail == "" {
 		http.Error(w, "uoa config is incomplete", http.StatusInternalServerError)
 		return
 	}
@@ -88,6 +110,8 @@ func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request)
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"domain":                   domain,
+		"jwks_url":                 jwksURL,
+		"contact_email":            contactEmail,
 		"redirect_urls":            redirectURLs,
 		"enabled_auth_methods":     authMethods,
 		"allowed_social_providers": uoaAllowedSocialProviders(authMethods),
@@ -120,17 +144,16 @@ func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request)
 			"max_team_memberships_per_user": 50,
 			"org_roles":                     []string{"owner", "admin", "member"},
 		},
-		"aud": h.cfg.UOAAudience,
 		"iat": now.Unix(),
 		"exp": now.Add(5 * time.Minute).Unix(),
 	}
 
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(h.cfg.UOASharedSecret))
+	token, err := signConfigJWT(claims, h.cfg.UOAConfigSigningKeyPEM, h.configSigningKID())
 	if err != nil {
 		http.Error(w, "failed to sign config", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Type", "application/jwt")
 	_, _ = w.Write([]byte(token))
 }
