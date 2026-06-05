@@ -110,7 +110,7 @@ func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request)
 		return
 	}
 
-	authMethods := []string{"email_password", "google", "apple"}
+	authMethods := []string{"email_password", "google"}
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"domain":                   domain,
