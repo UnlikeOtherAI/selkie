@@ -3,9 +3,6 @@ package auth
 import (
 	"context"
 	crand "crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -34,13 +31,15 @@ const (
 	mobileHandoffFailureLimit   = 10
 	mobileHandoffFailureWindow  = time.Minute
 
-	oauthStateCookieName = "selkie_oauth_state"
-	oauthStateTTL        = 10 * time.Minute
-	oauthStateByteLen    = 32
+	// loginFlowCookieTTL bounds how long a started login (PKCE verifier cookie)
+	// remains valid before the user must restart the flow.
+	loginFlowCookieTTL = 10 * time.Minute
 
 	// pkceVerifierCookieName holds the PKCE code_verifier across the UOA
 	// round-trip. It is HttpOnly + SameSite=Lax so it survives the top-level
-	// GET redirect back from UOA but is never readable by scripts.
+	// GET redirect back from UOA but is never readable by scripts. UOA does
+	// not echo an OAuth `state` parameter, so this cookie + PKCE is the CSRF
+	// binding for the callback.
 	pkceVerifierCookieName = "selkie_pkce_verifier"
 )
 
@@ -70,19 +69,12 @@ func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Get("/auth/dev-login", h.ServeDevLogin)
 }
 
-// ServeLogin issues a fresh OAuth state cookie and redirects to the UOA
-// authorization URL with the state value appended so that ServeCallback can
-// verify the round-trip.
+// ServeLogin issues a fresh PKCE verifier cookie and redirects to the UOA
+// authorization URL carrying the S256 challenge. UOA does not echo an OAuth
+// `state` query parameter back to the callback (it redirects to the exact
+// registered redirect_url with only `?code=…`), so CSRF protection is bound to
+// the HttpOnly verifier cookie + PKCE rather than a round-tripped state value.
 func (h *CallbackHandler) ServeLogin(w http.ResponseWriter, r *http.Request) {
-	state, err := randomOAuthState()
-	if err != nil {
-		if h.logger != nil {
-			h.logger.Error("generate oauth state", zap.Error(err))
-		}
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
 	verifier, challenge, err := newPKCE()
 	if err != nil {
 		if h.logger != nil {
@@ -92,24 +84,20 @@ func (h *CallbackHandler) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setOAuthStateCookie(w, r, state)
 	setPKCEVerifierCookie(w, r, verifier)
-	http.Redirect(w, r, appendQueryParam(BuildAuthURL(challenge), "state", state), http.StatusFound)
+	http.Redirect(w, r, BuildAuthURL(challenge), http.StatusFound)
 }
 
 // ServeCallback processes the OAuth callback, exchanges the code, upserts the user, and redirects with a JWT.
 func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) {
-	if !h.verifyOAuthState(w, r) {
-		return
-	}
 	verifier := pkceVerifierFromCookie(r)
-	// State and verifier have served their purpose; clear immediately so a
-	// failed upstream exchange cannot leave replayable cookies for the rest of
-	// the TTL window.
-	clearOAuthStateCookie(w, r)
+	// Clear the verifier immediately so a failed upstream exchange cannot leave
+	// a replayable cookie for the rest of the TTL window. Its presence is the
+	// CSRF binding: a callback in a browser that never started a login here
+	// carries no verifier, and an injected code cannot match it (PKCE).
 	clearPKCEVerifierCookie(w, r)
 	if verifier == "" {
-		http.Error(w, "invalid state", http.StatusBadRequest)
+		http.Error(w, "missing or expired login session", http.StatusBadRequest)
 		return
 	}
 
@@ -132,19 +120,18 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	//nolint:gosec // G710: redirect target is the fixed internal path "/admin"; token is our own freshly-minted session JWT placed in the fragment, not an attacker-controlled URL.
 	http.Redirect(w, r, "/admin#token="+token, http.StatusFound)
 }
 
 // ServeMobileCallback exchanges the upstream auth code and redirects with a short-lived one-time handoff code.
 func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Request) {
-	state := strings.TrimSpace(r.URL.Query().Get("state"))
-	if !isWellFormedOAuthState(state) {
-		http.Error(w, "invalid state", http.StatusBadRequest)
-		return
-	}
-
 	verifier := pkceVerifierFromCookie(r)
 	clearPKCEVerifierCookie(w, r)
+	if verifier == "" {
+		http.Error(w, "missing or expired login session", http.StatusBadRequest)
+		return
+	}
 	userID, _, _, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOAMobileRedirectURL, verifier)
 	if err != nil {
 		writeExchangeError(w, err)
@@ -162,7 +149,7 @@ func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	redirectURL, err := mobileRedirectURL(h.cfg.MobileRedirectURL, handoffCode, state)
+	redirectURL, err := mobileRedirectURL(h.cfg.MobileRedirectURL, handoffCode, "")
 	if err != nil {
 		if h.logger != nil {
 			h.logger.Error("build mobile redirect url", zap.Error(err))
@@ -522,50 +509,13 @@ func randomMobileHandoffCode(length int) (string, error) {
 	return string(chars), nil
 }
 
-func randomOAuthState() (string, error) {
-	buf := make([]byte, oauthStateByteLen)
-	if _, err := crand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
-func isWellFormedOAuthState(state string) bool {
-	if state == "" {
-		return false
-	}
-	if decoded, err := base64.RawURLEncoding.DecodeString(state); err == nil && len(decoded) == oauthStateByteLen {
-		return true
-	}
-	if decoded, err := base64.URLEncoding.DecodeString(state); err == nil && len(decoded) == oauthStateByteLen {
-		return true
-	}
-	if decoded, err := hex.DecodeString(state); err == nil && len(decoded) == oauthStateByteLen {
-		return true
-	}
-	return false
-}
-
-func setOAuthStateCookie(w http.ResponseWriter, r *http.Request, state string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     oauthStateCookieName,
-		Value:    state,
-		Path:     "/",
-		Expires:  time.Now().Add(oauthStateTTL),
-		MaxAge:   int(oauthStateTTL.Seconds()),
-		HttpOnly: true,
-		Secure:   isHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-}
-
 func setPKCEVerifierCookie(w http.ResponseWriter, r *http.Request, verifier string) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set per-request via isHTTPS(r); HttpOnly + SameSite=Lax are always set.
 		Name:     pkceVerifierCookieName,
 		Value:    verifier,
 		Path:     "/",
-		Expires:  time.Now().Add(oauthStateTTL),
-		MaxAge:   int(oauthStateTTL.Seconds()),
+		Expires:  time.Now().Add(loginFlowCookieTTL),
+		MaxAge:   int(loginFlowCookieTTL.Seconds()),
 		HttpOnly: true,
 		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
@@ -573,7 +523,7 @@ func setPKCEVerifierCookie(w http.ResponseWriter, r *http.Request, verifier stri
 }
 
 func clearPKCEVerifierCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set per-request via isHTTPS(r); HttpOnly + SameSite=Lax are always set.
 		Name:     pkceVerifierCookieName,
 		Value:    "",
 		Path:     "/",
@@ -593,32 +543,6 @@ func pkceVerifierFromCookie(r *http.Request) string {
 	return strings.TrimSpace(cookie.Value)
 }
 
-func clearOAuthStateCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     oauthStateCookieName,
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   isHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-}
-
-func (*CallbackHandler) verifyOAuthState(w http.ResponseWriter, r *http.Request) bool {
-	queryState := strings.TrimSpace(r.URL.Query().Get("state"))
-	cookie, err := r.Cookie(oauthStateCookieName)
-	if err != nil || cookie.Value == "" || queryState == "" ||
-		subtle.ConstantTimeCompare([]byte(queryState), []byte(cookie.Value)) != 1 {
-		// Clear the state cookie so an attacker cannot retry inside the TTL window.
-		clearOAuthStateCookie(w, r)
-		http.Error(w, "invalid state", http.StatusBadRequest)
-		return false
-	}
-	return true
-}
-
 func isHTTPS(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
@@ -627,14 +551,6 @@ func isHTTPS(r *http.Request) bool {
 		return true
 	}
 	return false
-}
-
-func appendQueryParam(rawURL, key, value string) string {
-	separator := "?"
-	if strings.Contains(rawURL, "?") {
-		separator = "&"
-	}
-	return rawURL + separator + url.QueryEscape(key) + "=" + url.QueryEscape(value)
 }
 
 func mobileRedirectURL(baseURL, handoffCode, state string) (string, error) {

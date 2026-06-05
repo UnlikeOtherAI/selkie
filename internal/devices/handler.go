@@ -41,6 +41,8 @@ const (
 	pairClaimSourceLockWindow = time.Hour
 )
 
+const outcomeSuccess = "success"
+
 type Handler struct {
 	db      *store.DB
 	logger  *zap.Logger
@@ -355,7 +357,7 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		if auditErr := h.audit.Log(r.Context(), audit.Event{
 			ActorUserID: &claims.Sub,
 			Action:      "device.revoke",
-			Outcome:     "success",
+			Outcome:     outcomeSuccess,
 			TargetTable: "devices",
 			TargetID:    &deviceID,
 			RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),

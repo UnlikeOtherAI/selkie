@@ -10,6 +10,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// fieldEnabled is the shared "enabled" JSON key used across the UOA config
+// payload and the dev-status response.
+const fieldEnabled = "enabled"
+
 func uoaConfigRedirectURLs(cfg CallbackHandler) []string {
 	seen := make(map[string]struct{}, 2)
 	redirectURLs := make([]string, 0, 2)
@@ -123,7 +127,7 @@ func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request)
 		"allow_registration":       true,
 		"registration_mode":        "password_required",
 		"access_requests": map[string]any{
-			"enabled":          false,
+			fieldEnabled:       false,
 			"notify_org_roles": []string{"owner", "admin"},
 		},
 		"session": map[string]any{
@@ -133,7 +137,7 @@ func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request)
 			"long_refresh_token_ttl_days":   30,
 		},
 		"org_features": map[string]any{
-			"enabled":                       true,
+			fieldEnabled:                    true,
 			"groups_enabled":                false,
 			"user_needs_team":               true,
 			"max_teams_per_org":             100,

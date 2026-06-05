@@ -25,6 +25,14 @@ const (
 	wgPublicKeyRawLen = 32
 )
 
+const (
+	platformIOS      = "ios"
+	fieldOSPlatform  = "os_platform"
+	fieldHostname    = "hostname"
+	reasonRequired   = "required"
+	fieldWGPublicKey = "wg_public_key"
+)
+
 // wgPublicKeyPattern enforces the OpenAPI contract for WireGuard public keys:
 // exactly 43 base64 chars (no `-`/`_` URL-safe variants, no whitespace) plus
 // the single trailing `=` pad. Standard library base64 decoding is too lenient
@@ -108,8 +116,8 @@ func validateEnrollRequest(req enrollRequest) error {
 		return err
 	}
 	platform := strings.TrimSpace(req.OSPlatform)
-	if platform != "ios" && platform != "android" {
-		return &enrollValidationError{Field: "os_platform", Reason: "must be 'ios' or 'android'"}
+	if platform != platformIOS && platform != "android" {
+		return &enrollValidationError{Field: fieldOSPlatform, Reason: "must be 'ios' or 'android'"}
 	}
 	if err := validateBoundedField("os_arch", req.OSArch, maxOSArchLen); err != nil {
 		return err
@@ -128,17 +136,17 @@ func validateHostname(raw string) error {
 	// collide with real ASCII hostnames downstream.
 	for _, r := range trimmed {
 		if r > unicode.MaxASCII {
-			return &enrollValidationError{Field: "hostname", Reason: "must be ASCII"}
+			return &enrollValidationError{Field: fieldHostname, Reason: "must be ASCII"}
 		}
 	}
 	hostname := strings.ToLower(trimmed)
 	switch {
 	case hostname == "":
-		return &enrollValidationError{Field: "hostname", Reason: "required"}
+		return &enrollValidationError{Field: fieldHostname, Reason: reasonRequired}
 	case len(hostname) > maxHostnameLen:
-		return &enrollValidationError{Field: "hostname", Reason: "too long"}
+		return &enrollValidationError{Field: fieldHostname, Reason: "too long"}
 	case !isValidDNSName(hostname):
-		return &enrollValidationError{Field: "hostname", Reason: "must be a valid DNS name"}
+		return &enrollValidationError{Field: fieldHostname, Reason: "must be a valid DNS name"}
 	}
 	return nil
 }
@@ -147,7 +155,7 @@ func validateBoundedField(field, raw string, maxLen int) error {
 	v := strings.TrimSpace(raw)
 	switch {
 	case v == "":
-		return &enrollValidationError{Field: field, Reason: "required"}
+		return &enrollValidationError{Field: field, Reason: reasonRequired}
 	case len(v) > maxLen:
 		return &enrollValidationError{Field: field, Reason: "too long"}
 	case containsControlChar(v):
@@ -159,20 +167,20 @@ func validateBoundedField(field, raw string, maxLen int) error {
 func validateWGPublicKey(raw string) error {
 	wgKey := strings.TrimSpace(raw)
 	if wgKey == "" {
-		return &enrollValidationError{Field: "wg_public_key", Reason: "required"}
+		return &enrollValidationError{Field: fieldWGPublicKey, Reason: reasonRequired}
 	}
 	if !wgPublicKeyPattern.MatchString(wgKey) {
-		return &enrollValidationError{Field: "wg_public_key", Reason: "must be base64-encoded 32 bytes"}
+		return &enrollValidationError{Field: fieldWGPublicKey, Reason: "must be base64-encoded 32 bytes"}
 	}
 	decoded, err := base64.StdEncoding.DecodeString(wgKey)
 	if err != nil || len(decoded) != wgPublicKeyRawLen {
-		return &enrollValidationError{Field: "wg_public_key", Reason: "must be base64-encoded 32 bytes"}
+		return &enrollValidationError{Field: fieldWGPublicKey, Reason: "must be base64-encoded 32 bytes"}
 	}
 	var fixed [wgPublicKeyRawLen]byte
 	copy(fixed[:], decoded)
 	fixed[31] &= 0x7f // RFC 7748 §5: X25519 ignores the high bit; canonicalize before lookup
 	if _, isLowOrder := lowOrderWGKeys[fixed]; isLowOrder {
-		return &enrollValidationError{Field: "wg_public_key", Reason: "is a low-order curve25519 point"}
+		return &enrollValidationError{Field: fieldWGPublicKey, Reason: "is a low-order curve25519 point"}
 	}
 	return nil
 }

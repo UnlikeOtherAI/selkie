@@ -296,6 +296,7 @@ func (h *Handler) handleDeviceEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	//nolint:gosec // G705: text/event-stream (not HTML) and %q JSON-quotes the device id; not an XSS sink.
 	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"device_id\":%q}\n\n", deviceID)
 	flusher.Flush()
 

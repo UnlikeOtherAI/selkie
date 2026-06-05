@@ -3,7 +3,6 @@ package auth
 
 import (
 	"context"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,58 +41,18 @@ func TestMobileRedirectURLErrorsWithoutBaseURL(t *testing.T) {
 	}
 }
 
-func TestIsWellFormedOAuthState(t *testing.T) {
-	good := base64.RawURLEncoding.EncodeToString(make([]byte, oauthStateByteLen))
-	if !isWellFormedOAuthState(good) {
-		t.Fatalf("expected base64 state of correct length to be accepted: %q", good)
-	}
-	if isWellFormedOAuthState("") {
-		t.Fatal("empty state must be rejected")
-	}
-	if isWellFormedOAuthState("not-base64-or-hex") {
-		t.Fatal("garbage state must be rejected")
-	}
-	short := base64.RawURLEncoding.EncodeToString(make([]byte, oauthStateByteLen-1))
-	if isWellFormedOAuthState(short) {
-		t.Fatal("short state must be rejected")
-	}
-}
+func TestServeCallbackRequiresPKCEVerifier(t *testing.T) {
+	h := &CallbackHandler{cfg: config.Config{InternalSessionSecret: "secret"}, logger: zap.NewNop()}
 
-func TestVerifyOAuthState(t *testing.T) {
-	h := &CallbackHandler{}
-
-	state := "round-trip-state"
-	req := httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state, nil)
-	req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: state})
+	// No PKCE verifier cookie => the callback must reject before any exchange.
+	req := httptest.NewRequest(http.MethodGet, "/auth/callback?code=abc", nil)
 	rec := httptest.NewRecorder()
-	if !h.verifyOAuthState(rec, req) {
-		t.Fatalf("expected verifyOAuthState to accept matching cookie + state, got %d", rec.Code)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/auth/callback?state=mismatch", nil)
-	req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: state})
-	rec = httptest.NewRecorder()
-	if h.verifyOAuthState(rec, req) {
-		t.Fatal("expected mismatched state to be rejected")
-	}
+	h.ServeCallback(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
-	// On mismatch the cookie must be cleared so a future request cannot replay it.
-	var cleared bool
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == oauthStateCookieName && c.MaxAge < 0 {
-			cleared = true
-		}
-	}
-	if !cleared {
-		t.Fatal("expected state cookie to be cleared on mismatch")
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state, nil)
-	rec = httptest.NewRecorder()
-	if h.verifyOAuthState(rec, req) {
-		t.Fatal("expected missing cookie to be rejected")
+	if !strings.Contains(rec.Body.String(), "missing or expired login session") {
+		t.Fatalf("body = %q, want missing/expired login session", rec.Body.String())
 	}
 }
 
@@ -122,14 +81,13 @@ func TestMintTokenRequiresAudience(t *testing.T) {
 	}
 }
 
-func TestServeCallback_StateClearedEvenOnExchangeFailure(t *testing.T) {
+func TestServeCallback_VerifierClearedEvenOnExchangeFailure(t *testing.T) {
 	h := &CallbackHandler{cfg: config.Config{InternalSessionSecret: "secret"}, logger: zap.NewNop()}
 
-	state := base64.RawURLEncoding.EncodeToString(make([]byte, oauthStateByteLen))
-	// Drive ServeCallback with a valid state cookie but no `code` query param.
-	// exchangeAndUpsertUser will return errMissingCode before any upstream call.
-	req := httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state, nil)
-	req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: state})
+	// Valid PKCE verifier cookie but no `code` query param: exchangeAndUpsertUser
+	// returns errMissingCode before any upstream call, and the verifier cookie
+	// must still be cleared so it cannot be replayed.
+	req := httptest.NewRequest(http.MethodGet, "/auth/callback", nil)
 	req.AddCookie(&http.Cookie{Name: pkceVerifierCookieName, Value: "test-verifier"})
 	rec := httptest.NewRecorder()
 
@@ -144,7 +102,7 @@ func TestServeCallback_StateClearedEvenOnExchangeFailure(t *testing.T) {
 
 	var cleared bool
 	for _, c := range rec.Result().Cookies() {
-		if c.Name != oauthStateCookieName {
+		if c.Name != pkceVerifierCookieName {
 			continue
 		}
 		if c.MaxAge < 0 || (!c.Expires.IsZero() && c.Expires.Before(time.Now())) {
@@ -152,7 +110,7 @@ func TestServeCallback_StateClearedEvenOnExchangeFailure(t *testing.T) {
 		}
 	}
 	if !cleared {
-		t.Fatal("expected state cookie to be cleared even when exchange fails")
+		t.Fatal("expected PKCE verifier cookie to be cleared even when exchange fails")
 	}
 }
 

@@ -205,7 +205,7 @@ WHERE id = $3
 		if auditErr := h.audit.Log(ctx, audit.Event{
 			ActorUserID: &claims.Sub,
 			Action:      "device.create",
-			Outcome:     "success",
+			Outcome:     outcomeSuccess,
 			TargetTable: "devices",
 			TargetID:    &deviceID,
 			RemoteIP:    sourceIP,

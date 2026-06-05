@@ -98,7 +98,7 @@ func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limi
 				// stall cannot pile up goroutines.
 				auditCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), rejectAuditTimeout)
 				defer cancel()
-				_ = auditor.Log(auditCtx, audit.Event{
+				_ = auditor.Log(auditCtx, audit.Event{ //nolint:errcheck // reject-path audit is best-effort and must not block the 401
 					Action:    "auth.middleware.reject",
 					Outcome:   "deny",
 					RemoteIP:  ip,

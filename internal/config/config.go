@@ -166,6 +166,50 @@ func Load() Config {
 // is surfaced via the returned warnings so the caller can log it — silently
 // discarding entries makes "all my CIDRs are typos" indistinguishable from
 // "no XFF trust intended" at runtime.
+// minTrustedV4Bits / minTrustedV6Bits are the narrowest masks accepted per
+// family. Anything wider (0.0.0.0/0, ::/0, ::ffff:0.0.0.0/96) would let any
+// source spoof its XFF chain, so it is refused.
+const (
+	minTrustedV4Bits = 8
+	minTrustedV6Bits = 16
+)
+
+// normalizeTrustedPrefix parses one CIDR entry and applies the trust-floor
+// policy. It returns the (possibly 4in6-normalized) prefix, an optional
+// warning to surface, and whether the prefix should be trusted. A non-empty
+// warning with accept==true means "trusted, but worth flagging".
+//
+// 4in6 prefixes (e.g. ::ffff:10.0.0.0/104) are normalized to their canonical
+// IPv4 form so they line up with unmapped candidate IPs in the trust check;
+// without this, Contains is family-strict and a 4in6-configured trusted CIDR
+// silently stops matching any peer.
+func normalizeTrustedPrefix(entry string) (netip.Prefix, string, bool) {
+	prefix, err := netip.ParsePrefix(entry)
+	if err != nil {
+		return netip.Prefix{}, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring invalid entry %q: %v", entry, err), false
+	}
+	switch {
+	case prefix.Addr().Is4In6():
+		bits := prefix.Bits() - 96
+		switch {
+		case bits < 0:
+			return netip.Prefix{}, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring 4in6 prefix %q with bits<96; use the canonical IPv4 form", entry), false
+		case bits < minTrustedV4Bits:
+			return netip.Prefix{}, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing 4in6 prefix %q; normalized v4 mask /%d trusts too wide a range (min /%d). Use the canonical IPv4 CIDR (e.g. 10.0.0.0/8, 127.0.0.1/32) instead.", entry, bits, minTrustedV4Bits), false
+		}
+		return netip.PrefixFrom(prefix.Addr().Unmap(), bits), fmt.Sprintf("TRUSTED_PROXY_CIDRS: 4in6 prefix %q normalized to canonical IPv4 form; configure the IPv4 CIDR directly to silence this warning", entry), true
+	case prefix.Addr().Is4():
+		if prefix.Bits() < minTrustedV4Bits {
+			return netip.Prefix{}, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing IPv4 prefix %q; mask /%d trusts too wide a range (min /%d)", entry, prefix.Bits(), minTrustedV4Bits), false
+		}
+	default:
+		if prefix.Bits() < minTrustedV6Bits {
+			return netip.Prefix{}, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing IPv6 prefix %q; mask /%d trusts too wide a range (min /%d)", entry, prefix.Bits(), minTrustedV6Bits), false
+		}
+	}
+	return prefix, "", true
+}
+
 func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
@@ -178,49 +222,13 @@ func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, []string) {
 		if entry == "" {
 			continue
 		}
-		prefix, err := netip.ParsePrefix(entry)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring invalid entry %q: %v", entry, err))
-			continue
+		prefix, warning, accept := normalizeTrustedPrefix(entry)
+		if warning != "" {
+			warnings = append(warnings, warning)
 		}
-		// Normalize 4in6 prefixes (e.g. ::ffff:10.0.0.0/104) to their
-		// canonical IPv4 form so they line up with unmapped candidate IPs in
-		// the trust check. Without this, Contains is family-strict and a
-		// 4in6-configured trusted CIDR silently stops matching any peer.
-		//
-		// Guard against degenerate masks: ::ffff:0.0.0.0/96 normalizes to
-		// 0.0.0.0/0, which trusts the entire public internet. Refuse any
-		// 4in6 prefix whose normalized v4 mask is shorter than /8 — anything
-		// wider than a single class-A block is almost certainly a typo and
-		// would create a silent security hole. The same floor applies to
-		// canonical IPv4/IPv6 prefixes: bare 0.0.0.0/0 or ::/0 in the trust
-		// list lets any source spoof its XFF chain.
-		const minV4Bits = 8
-		const minV6Bits = 16
-		if prefix.Addr().Is4In6() {
-			bits := prefix.Bits() - 96
-			if bits < 0 {
-				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: ignoring 4in6 prefix %q with bits<96; use the canonical IPv4 form", entry))
-				continue
-			}
-			if bits < minV4Bits {
-				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing 4in6 prefix %q; normalized v4 mask /%d trusts too wide a range (min /%d). Use the canonical IPv4 CIDR (e.g. 10.0.0.0/8, 127.0.0.1/32) instead.", entry, bits, minV4Bits))
-				continue
-			}
-			warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: 4in6 prefix %q normalized to canonical IPv4 form; configure the IPv4 CIDR directly to silence this warning", entry))
-			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), bits)
-		} else if prefix.Addr().Is4() {
-			if prefix.Bits() < minV4Bits {
-				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing IPv4 prefix %q; mask /%d trusts too wide a range (min /%d)", entry, prefix.Bits(), minV4Bits))
-				continue
-			}
-		} else {
-			if prefix.Bits() < minV6Bits {
-				warnings = append(warnings, fmt.Sprintf("TRUSTED_PROXY_CIDRS: refusing IPv6 prefix %q; mask /%d trusts too wide a range (min /%d)", entry, prefix.Bits(), minV6Bits))
-				continue
-			}
+		if accept {
+			prefixes = append(prefixes, prefix)
 		}
-		prefixes = append(prefixes, prefix)
 	}
 	if w := dualStackLoopbackWarning(prefixes); w != "" {
 		warnings = append(warnings, w)
