@@ -90,7 +90,7 @@ func TestServeUOAConfig(t *testing.T) {
 		t.Fatalf("redirect_urls = %#v", claims["redirect_urls"])
 	}
 	methods, ok := claims["enabled_auth_methods"].([]any)
-	if !ok || len(methods) != 3 || methods[0] != "email_password" {
+	if !ok || len(methods) != 2 || methods[0] != "email_password" || methods[1] != "google" {
 		t.Fatalf("enabled_auth_methods = %#v", claims["enabled_auth_methods"])
 	}
 }
