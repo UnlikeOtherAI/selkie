@@ -1,0 +1,73 @@
+name: deploy
+
+# Auto-deploy to the shared Hetzner production host (178.105.82.46) after the
+# `ci` workflow succeeds on main. Decoupled from ci.yml so CI's
+# cancel-in-progress concurrency can never abort an in-flight deploy.
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: root@178.105.82.46
+  DEPLOY_PATH: /srv/selkie
+
+jobs:
+  deploy:
+    name: deploy to production
+    # Deploy only when the triggering CI run passed (or on a manual dispatch).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Deploy the exact commit that passed CI (workflow_run), or the
+          # dispatched ref for a manual run.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: configure ssh
+        env:
+          DEPLOY_KEY: ${{ secrets.SELKIE_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SELKIE_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: rsync source to server
+        run: |
+          rsync -az --delete \
+            --exclude '.git' --exclude '.worktrees' --exclude 'node_modules' \
+            --exclude '.playwright-cli' --exclude '.playwright-mcp' --exclude 'e2e' \
+            --exclude 'App' --exclude 'control-server' --exclude 'control-server-new' \
+            --exclude '*.tar' --exclude '.env' \
+            -e "ssh -i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes" \
+            ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: build & restart stack
+        run: |
+          ssh -i "$HOME/.ssh/id_deploy" -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes \
+            "$DEPLOY_HOST" \
+            "cd $DEPLOY_PATH && docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml up -d --build && docker image prune -f"
+
+      - name: health check
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 https://api.selkie.live/healthz >/dev/null; then
+              echo "healthz OK after $((i * 4))s"; exit 0
+            fi
+            sleep 4
+          done
+          echo "::error::health check failed — api.selkie.live/healthz not OK"; exit 1

@@ -115,6 +115,31 @@ All commands run as `root` on the host.
    top-level `${VARS}` from the compose file's directory (`ops/`) and silently
    blanks `REDIS_PASSWORD`, `COTURN_SECRET`, etc.
 
+## Continuous deployment
+
+Pushes to `main` auto-deploy to the Hetzner host via GitHub Actions:
+
+- `.github/workflows/ci.yml` (`ci`) runs lint + build/test + web + e2e.
+- `.github/workflows/deploy.yml` (`deploy`) is triggered by `workflow_run`
+  **after `ci` succeeds on `main`** (so broken commits never deploy). It is a
+  separate workflow with its own non-cancelling concurrency group so a rapid
+  second push cannot abort an in-flight deploy. It can also be run manually
+  from the Actions tab (`workflow_dispatch`).
+
+The deploy job: rsyncs the repo to `/srv/selkie` (preserving `.env`), runs
+`docker compose ... up -d --build`, prunes dangling images, then polls
+`https://api.selkie.live/healthz` and fails the run if it never goes green.
+
+Required GitHub repo secrets:
+
+- `SELKIE_DEPLOY_SSH_KEY` — private key whose public half is in the host's
+  `root` `authorized_keys` (comment `selkie-github-deploy`).
+- `SELKIE_SSH_KNOWN_HOSTS` — `ssh-keyscan 178.105.82.46` output, for strict
+  host-key checking.
+
+Rotate the deploy key by regenerating the pair, replacing the `authorized_keys`
+entry on the host, and updating `SELKIE_DEPLOY_SSH_KEY`.
+
 ## Day-2 operations
 
 Canonical compose invocation (always pass project name + env-file):
