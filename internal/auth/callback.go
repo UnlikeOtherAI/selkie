@@ -309,6 +309,12 @@ func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redir
 
 	uoaClaims, err := ExchangeCode(ctx, code, redirectURL, codeVerifier)
 	if err != nil {
+		// Surface the upstream cause (UOA status + sanitized body, PKCE/decode
+		// failures) so a failing login is diagnosable; the client still only
+		// sees the opaque "auth failed".
+		if h.logger != nil {
+			h.logger.Warn("uoa code exchange failed", zap.Error(err))
+		}
 		return "", false, nil, errAuthFailed
 	}
 
