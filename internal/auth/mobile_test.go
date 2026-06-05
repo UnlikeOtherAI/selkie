@@ -130,6 +130,7 @@ func TestServeCallback_StateClearedEvenOnExchangeFailure(t *testing.T) {
 	// exchangeAndUpsertUser will return errMissingCode before any upstream call.
 	req := httptest.NewRequest(http.MethodGet, "/auth/callback?state="+state, nil)
 	req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: state})
+	req.AddCookie(&http.Cookie{Name: pkceVerifierCookieName, Value: "test-verifier"})
 	rec := httptest.NewRecorder()
 
 	h.ServeCallback(rec, req)

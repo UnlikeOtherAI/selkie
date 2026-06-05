@@ -54,6 +54,9 @@ type Config struct {
 	UOARedirectURL           string
 	UOAMobileRedirectURL     string
 	UOAOwnerSub              string
+	UOAConfigSigningKeyPEM   string
+	UOAConfigSigningKID      string
+	UOAContactEmail          string
 	MobileRedirectURL        string
 	DatabaseURL              string
 	RedisURL                 string
@@ -122,6 +125,9 @@ func Load() Config {
 		UOARedirectURL:           os.Getenv("UOA_REDIRECT_URL"),
 		UOAMobileRedirectURL:     os.Getenv("UOA_MOBILE_REDIRECT_URL"),
 		UOAOwnerSub:              os.Getenv("UOA_OWNER_SUB"),
+		UOAConfigSigningKeyPEM:   os.Getenv("UOA_CONFIG_SIGNING_KEY"),
+		UOAConfigSigningKID:      getenv("UOA_CONFIG_SIGNING_KID", "selkie-config"),
+		UOAContactEmail:          os.Getenv("UOA_CONTACT_EMAIL"),
 		MobileRedirectURL:        getenv("MOBILE_REDIRECT_URL", "selkie://auth"),
 		DatabaseURL:              os.Getenv("DATABASE_URL"),
 		RedisURL:                 os.Getenv("REDIS_URL"),

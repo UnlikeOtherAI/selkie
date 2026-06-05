@@ -1,0 +1,124 @@
+# Production deployment for the shared Hetzner host (178.105.82.46).
+#
+# Unlike ops/docker-compose.edge.yml (the older Belgium-VM prototype), this
+# stack REUSES shared infrastructure that already runs on the box:
+#
+#   - the shared Caddy edge (container `caddy`, network `edge`) terminates TLS
+#     for admin.selkie.live + api.selkie.live and reverse-proxies to `server`
+#     by container name. Selkie does NOT run its own Caddy here.
+#   - the shared Postgres 17 (container `postgres`, network `db`) holds the
+#     `selkie` database. Selkie does NOT run its own Postgres here.
+#
+# Selkie brings its own private Redis, coturn, and the WireGuard hub (run by
+# the `server` process itself inside its own network namespace).
+#
+# Deployed from /srv/selkie on the host:  docker compose -f ops/docker-compose.prod.yml up -d --build
+#
+# `edge` and `db` are created by /srv/infra/docker-compose.yml and joined here
+# as external networks. `selkie-internal` is private to this stack.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: selkie-redis
+    restart: unless-stopped
+    # Fail fast if REDIS_PASSWORD is empty rather than silently disabling AUTH.
+    command: ["sh", "-c", "[ -n \"$$REDIS_PASSWORD\" ] || { echo 'REDIS_PASSWORD empty'; exit 1; }; exec redis-server --protected-mode yes --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - selkie-internal
+    # Loopback publish so the host-networked coturn can reach the statsdb.
+    # Never expose Redis publicly.
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: selkie-server:latest
+    container_name: selkie-server
+    restart: unless-stopped
+    # Bridge networking (not host) so the shared Caddy can reach the server by
+    # name on `edge`. The WireGuard hub is created inside this container's
+    # network namespace: NET_ADMIN + /dev/net/tun + ip_forward make that work,
+    # and 51820/udp is published so devices can reach relay.selkie.live.
+    #
+    # Must run as root: `ip link add type wireguard` needs real CAP_NET_ADMIN.
+    # The image's uid-10001 + file-capabilities model is silently rejected
+    # (EPERM) by this host's 6.8 kernel for the wireguard rtnetlink op.
+    user: "0:0"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.src_valid_mark: "1"
+    ports:
+      - "51820:51820/udp"
+    networks:
+      - edge            # reachable by shared Caddy as `selkie-server:8080`
+      - db              # reaches shared Postgres as `postgres:5432`
+      - selkie-internal # reaches Redis as `selkie-redis:6379`
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:${SERVER_PORT:-8080}/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: selkie-coturn
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - turnserver
+      - --use-auth-secret
+      - --static-auth-secret=${COTURN_SECRET}
+      - --realm=${COTURN_REALM:-selkie}
+      - --external-ip=${TURN_EXTERNAL_IP}
+      # Pin to the public IPv4 so coturn does not advertise docker bridge
+      # addresses (172.x) as unusable ICE relay candidates.
+      - --listening-ip=${TURN_EXTERNAL_IP}
+      - --relay-ip=${TURN_EXTERNAL_IP}
+      - --listening-port=${TURN_PORT:-3478}
+      - --fingerprint
+      - --no-multicast-peers
+      - --no-tls
+      - --no-dtls
+      - --cli-ip=127.0.0.1
+      - --cli-port=5766
+      - --cli-password=${COTURN_CLI_PASSWORD}
+      - --min-port=49152
+      - --max-port=49200
+      - --prometheus
+      - --redis-statsdb=ip=127.0.0.1 dbname=1 port=6379 password=${REDIS_PASSWORD} connect_timeout=30
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  edge:
+    external: true
+  db:
+    external: true
+  selkie-internal:
+    driver: bridge
+
+volumes:
+  redis_data:

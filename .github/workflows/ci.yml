@@ -214,10 +214,7 @@ jobs:
           path: e2e/playwright-report/
           retention-days: 7
 
-  deploy:
-    name: deploy (placeholder)
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [lint, ios-lint, build-test, web, e2e]
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "TODO — deploy to Google Cloud"
+# Deployment runs in a separate workflow (.github/workflows/deploy.yml),
+# triggered via workflow_run after this `ci` workflow succeeds on main. Keeping
+# it separate means CI's cancel-in-progress concurrency cannot abort a deploy
+# mid-flight.

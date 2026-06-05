@@ -3,204 +3,239 @@
 Selkie has two deployment shapes in this repository:
 
 - local development: [docker-compose.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/docker-compose.yml)
-- prototype production edge VM: [ops/docker-compose.edge.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/docker-compose.edge.yml)
+- **production: the shared Hetzner host** via
+  [ops/docker-compose.prod.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/docker-compose.prod.yml)
 
-The approved prototype topology is intentionally cheap:
+> **History.** The earlier prototype targeted a dedicated Belgium GCP VM with a
+> Cloud SQL Auth Proxy and Selkie's own Caddy
+> ([ops/docker-compose.edge.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/docker-compose.edge.yml)).
+> That topology is **superseded**. The edge compose file is kept for reference
+> only; new work should target the production shape below.
 
-- `selkie.live` stays on Cloud Run
-- `admin.selkie.live`, `api.selkie.live`, and `relay.selkie.live` terminate on one always-on Belgium VM
-- PostgreSQL stays on the shared UnlikeOtherAI instance
-- Cloud SQL Auth Proxy, Redis, coturn, Caddy, and the Selkie server run on that VM
+## Production topology (current)
 
-## Prototype topology
+Production runs on a **shared Hetzner host** (`178.105.82.46`, Nuremberg) that
+also hosts several other UnlikeOtherAI projects (voicepos, hugo, …). Selkie
+**reuses** the shared edge proxy and database already on that box and brings
+only what is specific to it (Redis, coturn, the WireGuard hub).
 
 ```text
 Internet
   |
-  +--> selkie.live ----------------------------> Cloud Run website
+  +--> selkie.live ----------------------------> Cloud Run website (unchanged)
   |
-  +--> admin.selkie.live ----------------------> Caddy :443 on Belgium VM
+  +--> admin.selkie.live --443--> shared Caddy --(edge net)--> selkie-server:8080
+  +--> api.selkie.live   --443--> shared Caddy --(edge net)--> selkie-server:8080
   |
-  +--> api.selkie.live ------------------------> Caddy :443 on Belgium VM
-  |
-  +--> relay.selkie.live:51820/udp -----------> server-owned wg0 on Belgium VM
-  |
-  +--> relay.selkie.live:3478/udp,tcp --------> coturn on Belgium VM
+  +--> relay.selkie.live:51820/udp ------------> selkie-server wg0 (published)
+  +--> relay.selkie.live:3478/udp,tcp ---------> selkie-coturn (host net)
 
-Belgium VM
-  |
-  +--> Caddy
-  +--> selkie-server
-  +--> cloud-sql-proxy
-  +--> Redis
-  +--> coturn
-  +--> WireGuard wg0
+Hetzner host /srv
+  /srv/infra   shared Caddy (container `caddy`, net `edge`)
+               shared Postgres 17 (container `postgres`, net `db`)
+  /srv/selkie  ops/docker-compose.prod.yml ->
+                 selkie-server  (bridge: edge + db + selkie-internal)
+                 selkie-redis   (selkie-internal, 127.0.0.1:6379)
+                 selkie-coturn  (host net)
 
-selkie-server --> cloud-sql-proxy --> shared PostgreSQL
-selkie-server --> local Redis
-coturn --> local Redis statsdb
+selkie-server --(db net)----------> shared Postgres `postgres:5432` (db `selkie`)
+selkie-server --(selkie-internal)-> selkie-redis:6379
+selkie-server  owns wg0 inside its own netns (NET_ADMIN + /dev/net/tun)
 ```
 
-## Why the VM exists
+### What is reused vs. owned
 
-The website can scale to zero. The VPN path cannot.
+| Component  | Source                                            |
+| ---------- | ------------------------------------------------- |
+| TLS edge   | **reused** shared Caddy (`/srv/infra`, net `edge`)|
+| PostgreSQL | **reused** shared Postgres 17 (`/srv/infra`, `db`)|
+| Redis      | **owned** by Selkie (`selkie-redis`, private net) |
+| coturn     | **owned** by Selkie (host net)                    |
+| WireGuard  | **owned** by Selkie (server process, `wg0`)       |
 
-The VM is required because the Selkie server must:
+Do **not** start a second Caddy or Postgres on the host, and do **not** edit
+other projects' compose files or Caddy blocks.
 
-- own `wg0`
-- accept WireGuard on `51820/udp`
-- route traffic between device `/32` peers
-- rewrite peer endpoints from device heartbeats
-- keep coturn reachable on its public UDP and TCP ports
+## First-time provisioning
 
-Cloud Run is not a valid target for those responsibilities.
+All commands run as `root` on the host.
 
-## Edge VM compose
+1. **Source.** Sync the repo to `/srv/selkie` (rsync from a clean checkout, or
+   `git clone`). The build context is `/srv/selkie` (Dockerfile at its root);
+   the compose file lives at `ops/docker-compose.prod.yml`.
 
-Use [ops/docker-compose.edge.yml](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/docker-compose.edge.yml) on the Belgium VM.
+2. **Database.** Create a dedicated role + database on the shared instance
+   (the shared superuser password is in `/srv/infra/.env`):
 
-Runtime shape:
+   ```sh
+   docker exec -e PGPASSWORD="<super>" postgres \
+     psql -U postgres -c "CREATE ROLE selkie LOGIN PASSWORD '<dbpw>'"
+   docker exec -e PGPASSWORD="<super>" postgres \
+     psql -U postgres -c "CREATE DATABASE selkie OWNER selkie"
+   ```
 
-- `caddy` uses host networking and terminates TLS for `admin.` and `api.`
-- `server` uses host networking and `CAP_NET_ADMIN` so it can create and manage `wg0`
-- `coturn` uses host networking for direct UDP and TCP exposure
-- `TURN_EXTERNAL_IP` must be the VM's literal public IPv4 because coturn rejects hostnames for `--external-ip`
-- `TURN_BIND_IP` should be the VM's primary internal IPv4 so coturn binds and relays on the intended interface only
-- `cloudsql-proxy` exposes the shared PostgreSQL instance locally on `127.0.0.1:5432`
-- `redis` listens on the VM and is intended to be reusable by other internal projects later
+   Migrations run automatically on server boot — there is no separate migrate
+   step.
 
-Important constraints:
+3. **Secrets / `.env`.** Write `/srv/selkie/.env` (mode 600, never committed).
+   Generate fresh secrets on the host; the WireGuard keypair is generated with
+   `wg genkey | tee >(wg pubkey)`. See [Runtime configuration](#runtime-configuration).
 
-- PostgreSQL is external in this prototype. Do not start a second local Postgres on the VM.
-- the VM needs `roles/cloudsql.client` so the local Cloud SQL Auth Proxy can reach the shared instance
-- Redis `6379` must never be exposed publicly. Limit it to internal VPC access only.
-- IP forwarding must be enabled on the host.
-- the VM is always on; this part cannot scale to zero.
+4. **Firewall (ufw).** The relay needs UDP/TCP beyond the shared 80/443:
 
-## Required host configuration
+   ```sh
+   ufw allow 3478/tcp && ufw allow 3478/udp     # coturn STUN/TURN
+   ufw allow 51820/udp                           # WireGuard
+   ufw allow 49152:49200/udp                     # coturn relay range
+   ```
 
-The VM must be a Linux host in `europe-west1` with:
+5. **Caddy.** Append the Selkie site blocks
+   ([ops/caddy/selkie.caddy](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/caddy/selkie.caddy))
+   to the shared `/srv/infra/caddy/Caddyfile`, then:
 
-- machine type `e2-small`
-- static public IP
-- WireGuard kernel support
-- Docker Engine and Compose plugin
-- IPv4 forwarding enabled
+   ```sh
+   docker exec caddy caddy validate --config /etc/caddy/Caddyfile
+   docker exec caddy caddy reload   --config /etc/caddy/Caddyfile
+   ```
 
-Required host sysctls:
+6. **DNS.** Point `admin.`, `api.`, and `relay.selkie.live` (A records,
+   DNS-only — not proxied) at `178.105.82.46`. `selkie.live` apex stays on
+   Cloud Run. Caddy obtains Let's Encrypt certs for `admin.`/`api.` on the
+   first request **after** DNS resolves to the host. If a cert attempt fired
+   before propagation, `docker restart caddy` forces a fresh attempt.
+
+7. **Bring up:**
+
+   ```sh
+   cd /srv/selkie
+   docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml up -d --build
+   ```
+
+   The `--env-file .env` flag is **required**: compose otherwise interpolates
+   top-level `${VARS}` from the compose file's directory (`ops/`) and silently
+   blanks `REDIS_PASSWORD`, `COTURN_SECRET`, etc.
+
+## Continuous deployment
+
+Pushes to `main` auto-deploy to the Hetzner host via GitHub Actions:
+
+- `.github/workflows/ci.yml` (`ci`) runs lint + build/test + web + e2e.
+- `.github/workflows/deploy.yml` (`deploy`) is triggered by `workflow_run`
+  **after `ci` succeeds on `main`** (so broken commits never deploy). It is a
+  separate workflow with its own non-cancelling concurrency group so a rapid
+  second push cannot abort an in-flight deploy. It can also be run manually
+  from the Actions tab (`workflow_dispatch`).
+
+The deploy job: rsyncs the repo to `/srv/selkie` (preserving `.env`), runs
+`docker compose ... up -d --build`, prunes dangling images, then polls
+`https://api.selkie.live/healthz` and fails the run if it never goes green.
+
+Required GitHub repo secrets:
+
+- `SELKIE_DEPLOY_SSH_KEY` — private key whose public half is in the host's
+  `root` `authorized_keys` (comment `selkie-github-deploy`).
+- `SELKIE_SSH_KNOWN_HOSTS` — `ssh-keyscan 178.105.82.46` output, for strict
+  host-key checking.
+
+Rotate the deploy key by regenerating the pair, replacing the `authorized_keys`
+entry on the host, and updating `SELKIE_DEPLOY_SSH_KEY`.
+
+## Day-2 operations
+
+Canonical compose invocation (always pass project name + env-file):
 
 ```sh
-net.ipv4.ip_forward=1
-net.ipv4.conf.all.src_valid_mark=1
+cd /srv/selkie
+docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml <cmd>
 ```
+
+- redeploy after a source change: `... up -d --build`
+- logs: `docker logs selkie-server`
+- health: `docker exec selkie-server wget -qO- http://127.0.0.1:8080/healthz`
+- WireGuard state: `docker exec selkie-server wg show wg0`
+
+## Runtime configuration
+
+The server runs **as root in-container** with `cap_add: NET_ADMIN`. This is
+required: `ip link add wg0 type wireguard` needs real `CAP_NET_ADMIN`, and the
+image's uid-10001 + file-capabilities model is rejected with `EPERM` by the
+host's 6.8 kernel for the WireGuard rtnetlink operation.
+
+Key values that differ from the old prototype:
+
+```dotenv
+# Reach the shared Postgres over the `db` docker network by container name.
+DATABASE_URL=postgres://selkie:<dbpw>@postgres:5432/selkie?sslmode=disable
+# Selkie-owned Redis on the private network.
+REDIS_URL=redis://:<redispw>@selkie-redis:6379/0
+# coturn (host net) reaches Redis on loopback; server uses the service name.
+COTURN_REDIS_STATSDB=redis://:<redispw>@127.0.0.1:6379/1
+# coturn advertises the host's public IPv4 only (no docker bridge candidates).
+TURN_EXTERNAL_IP=178.105.82.46
+TURN_HOST=relay.selkie.live
+WG_SERVER_ENDPOINT=relay.selkie.live
+WG_SERVER_PORT=51820
+WG_OVERLAY_CIDR=10.100.0.0/16
+# The shared Caddy lives on the `edge` docker net (172.18/16); trust its XFF.
+TRUSTED_PROXY_CIDRS=172.18.0.0/16,127.0.0.1/32
+```
+
+## SSO status
+
+SSO is delegated to `authentication.unlikeotherai.com` and the live UOA
+contract is **implemented** (RS256 config JWT + `/.well-known/jwks.json` + PKCE
++ decode-not-verify). Hitting login registers `api.selkie.live` as a PENDING
+integration. To finish go-live (one-time, human):
+
+1. A UOA superuser approves `api.selkie.live` in `/admin`.
+2. `UOA_CONTACT_EMAIL` receives a one-time link; claim the per-domain
+   `client_secret`.
+3. Set `UOA_SHARED_SECRET=<client_secret>` in `/srv/selkie/.env` and
+   `docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml restart server`.
+
+The RSA signing key lives in `UOA_CONFIG_SIGNING_KEY` (base64 PEM). See
+[sso.md](sso.md).
 
 ## DNS shape
 
 Required public records:
 
 - `selkie.live` -> Cloud Run website
-- `admin.selkie.live` -> Belgium VM static IP
-- `api.selkie.live` -> Belgium VM static IP
-- `relay.selkie.live` -> Belgium VM static IP
-
-Recommended runtime values:
-
-```dotenv
-ADMIN_HOST=admin.selkie.live
-API_HOST=api.selkie.live
-RELAY_HOST=relay.selkie.live
-TURN_HOST=relay.selkie.live
-TURN_EXTERNAL_IP=<vm public IPv4>
-TURN_BIND_IP=<vm primary internal IPv4>
-WG_SERVER_ENDPOINT=relay.selkie.live
-WG_SERVER_PORT=51820
-WG_INTERFACE_NAME=wg0
-WG_OVERLAY_CIDR=10.100.0.0/16
-CLOUDSQL_INSTANCE_CONNECTION_NAME=gen-lang-client-0561071620:europe-west1:uoa-auth-db
-```
-
-The server overlay address is derived from `WG_OVERLAY_CIDR`. For `10.100.0.0/16`, the server owns `10.100.0.1/16` and each device gets its own `/32`.
+- `admin.selkie.live` -> `178.105.82.46` (A, DNS-only)
+- `api.selkie.live` -> `178.105.82.46` (A, DNS-only)
+- `relay.selkie.live` -> `178.105.82.46` (A, DNS-only)
 
 ## Firewall policy
 
-Internet-facing ports on the VM:
+Internet-facing ports on the host:
 
-- `80/tcp`
-- `443/tcp`
-- `3478/udp`
-- `3478/tcp`
-- `51820/udp`
+- `80/tcp`, `443/tcp` (+ `443/udp` HTTP/3) — shared edge
+- `3478/udp`, `3478/tcp` — coturn STUN/TURN
+- `49152-49200/udp` — coturn relay range
+- `51820/udp` — WireGuard
 
-Internal-only ports:
+Internal-only:
 
-- `6379/tcp` for Redis
-- `5766/tcp` for coturn CLI
-
-## Secrets
-
-Required secrets:
-
-- `UOA_SHARED_SECRET`
-- `INTERNAL_SESSION_SECRET`
-- `COTURN_SECRET`
-- `COTURN_CLI_PASSWORD`
-- `WG_PRIVATE_KEY`
-- `REDIS_PASSWORD`
-- shared PostgreSQL credentials inside `DATABASE_URL`
-
-Derived but non-secret runtime values:
-
-- `WG_SERVER_PUBLIC_KEY`
-- `WG_SERVER_ENDPOINT`
-- `TURN_HOST`
-
-Rules:
-
-- `INTERNAL_SESSION_SECRET` must be distinct from `UOA_SHARED_SECRET`
-- `WG_PRIVATE_KEY` never leaves the VM runtime secret store
-- `WG_SERVER_PUBLIC_KEY` should be derived from `WG_PRIVATE_KEY`, not managed separately by hand
-- secrets must never be committed or logged
-
-## Caddy requirements
-
-Caddy is the only TLS edge for `admin.` and `api.` on the VM.
-
-Use [ops/Caddyfile](/System/Volumes/Data/.internal/projects/Projects/selkie/ops/Caddyfile). It must:
-
-- reverse proxy to the local server HTTP port
-- preserve long-lived SSE streams
-- disable response buffering for `GET /api/v1/devices/{id}/events`
-
-In this repo that is done with `flush_interval -1` on the SSE path.
-
-## Runtime readiness
-
-Readiness rules for the prototype VM:
-
-1. PostgreSQL must be reachable.
-2. Redis must be reachable when `REDIS_URL` is configured.
-3. the server must initialize `wg0` successfully when `WG_PRIVATE_KEY` is configured.
-4. Caddy should only start after the server health check passes.
+- `127.0.0.1:5432` — shared Postgres (never public)
+- `127.0.0.1:6379` — Selkie Redis (never public)
+- `127.0.0.1:5766` — coturn CLI
 
 ## WireGuard hub rules
 
 The server owns the WireGuard hub in the MVP.
 
-Operational rules:
-
 - the server creates `wg0` on startup when `WG_PRIVATE_KEY` is present
-- the server assigns the first usable overlay address in `WG_OVERLAY_CIDR` to `wg0`
-- every device gets `AllowedIPs = <server_overlay_ip>/32`
-- every server-side peer gets `AllowedIPs = <device_overlay_ip>/32`
-- `PersistentKeepalive = 25` is set on both sides
-- peer endpoint changes come from device heartbeats and are reconciled onto the host interface
+- it assigns the first usable overlay address in `WG_OVERLAY_CIDR` to `wg0`
+- every device gets `AllowedIPs = <server_overlay_ip>/32`; each server-side
+  peer gets `AllowedIPs = <device_overlay_ip>/32`
+- `PersistentKeepalive = 25` on both sides
+- peer endpoint changes come from device heartbeats and are reconciled onto
+  the host interface (this also covers the docker-NAT seen by `51820/udp`
+  published from the bridge container)
 
 ## Cloud Run after cutover
 
-After `admin.` and `api.` are live on the VM:
-
-- keep the existing Cloud Run `selkie-server` service out of DNS
-- do not delete it during prototype rollout
-- leave `selkie.live` on Cloud Run
-
-This keeps rollback simple and avoids destructive GCP actions.
+- `selkie.live` (apex website) stays on Cloud Run
+- the old prototype VM / Cloud Run `selkie-server` service, if any, is left out
+  of DNS but not deleted, to keep rollback simple and avoid destructive GCP
+  actions

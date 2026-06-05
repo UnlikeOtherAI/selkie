@@ -1,0 +1,62 @@
+# Selkie site blocks for the SHARED Caddy on the Hetzner host.
+#
+# These are appended to /srv/infra/caddy/Caddyfile (the shared edge that also
+# fronts voicepos, hugo, etc.). They are kept here in the repo as the source
+# of truth; after editing, copy the change onto the host and run:
+#
+#   docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# `selkie-server` resolves on the shared `edge` docker network because the
+# server container (ops/docker-compose.prod.yml) joins `edge`. We do NOT touch
+# the shared global options block, so other projects are unaffected; Caddy is
+# the trusted edge and forwards the real client IP in X-Forwarded-For, which
+# the Go server honours via TRUSTED_PROXY_CIDRS=172.18.0.0/16 (the edge range).
+
+# Selkie admin SPA
+admin.selkie.live {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: https://*.googleusercontent.com; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+		X-Frame-Options "DENY"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		Cross-Origin-Resource-Policy "same-origin"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+	}
+	reverse_proxy selkie-server:8080 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up Host {host}
+	}
+}
+
+# Selkie JSON API + auth callbacks
+api.selkie.live {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		Cross-Origin-Resource-Policy "cross-origin"
+	}
+
+	# Long-lived SSE device-event stream: disable response buffering.
+	@device_events path_regexp device_events ^/api/v1/devices/[^/]+/events$
+	handle @device_events {
+		reverse_proxy selkie-server:8080 {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up Host {host}
+			flush_interval -1
+		}
+	}
+
+	reverse_proxy selkie-server:8080 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up Host {host}
+	}
+}
