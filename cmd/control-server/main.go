@@ -106,7 +106,7 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	// (slow migrations, wireguard hub setup) unblocks the boot path rather
 	// than waiting for k8s SIGKILL. A separate detached context is used
 	// only for shutdown-time cleanup (telemetry flush) where cancellation
-	// from the now-cancelled sigCtx would defeat the flush.
+	// from the now-canceled sigCtx would defeat the flush.
 	ctx := sigCtx
 
 	otelShutdown, err := telemetry.Init(ctx, telemetry.Config{
@@ -118,11 +118,12 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 		return fmt.Errorf("init telemetry: %w", err)
 	}
 	defer func() {
-		// Use a detached context so a cancelled sigCtx does not abort
-		// the otel exporter flush.
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// WithoutCancel detaches from sigCtx (already canceled during
+		// shutdown) while keeping context lineage, so the otel exporter flush
+		// is not aborted.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		_ = otelShutdown(shutdownCtx)
+		_ = otelShutdown(shutdownCtx) //nolint:errcheck // best-effort telemetry flush on shutdown
 	}()
 
 	db, err := store.OpenDB(ctx, cfg.DatabaseURL)
@@ -172,8 +173,8 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 		return fmt.Errorf("init wireguard hub: %w", err)
 	}
 	if hub != nil {
-		if err := hub.Init(ctx, cfg.WGServerPort); err != nil {
-			return fmt.Errorf("init wireguard hub: %w", err)
+		if initErr := hub.Init(ctx, cfg.WGServerPort); initErr != nil {
+			return fmt.Errorf("init wireguard hub: %w", initErr)
 		}
 		logger.Info("wireguard hub initialized", zap.String("interface", cfg.WGInterfaceName))
 	}
@@ -193,9 +194,9 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	// the redis client, and only after that does the outer rdb.Close /
 	// db.Close defer chain run.
 	if cfg.CoturnRedisStatsDB != "" {
-		statsOpts, err := redis.ParseURL(cfg.CoturnRedisStatsDB)
-		if err != nil {
-			return fmt.Errorf("parse coturn redis statsdb url: %w", err)
+		statsOpts, parseErr := redis.ParseURL(cfg.CoturnRedisStatsDB)
+		if parseErr != nil {
+			return fmt.Errorf("parse coturn redis statsdb url: %w", parseErr)
 		}
 		statsClient := redis.NewClient(statsOpts)
 		defer statsClient.Close()
@@ -269,7 +270,8 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 
 	// Bind the listener synchronously so a bind failure surfaces as a boot
 	// error rather than a goroutine error after ready has been flipped.
-	ln, err := net.Listen("tcp", srv.Addr)
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
@@ -310,10 +312,13 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	ready.Store(false)
 	logger.Info("shutting down")
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	// WithoutCancel detaches from the already-canceled sigCtx (we are here
+	// because it fired) while keeping lineage, so the drain gets its full
+	// grace window.
+	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(sigCtx), shutdownGrace)
 	defer cancel()
 	// A second SIGTERM during the drain force-closes in-flight connections.
-	// http.Server.Shutdown returns when the shutdown context is cancelled
+	// http.Server.Shutdown returns when the shutdown context is canceled
 	// but does NOT actually close hijacked or long-running connections —
 	// only srv.Close() does. So we cancel() to unblock Shutdown AND call
 	// srv.Close() to terminate sockets that ignore graceful drain.
@@ -326,7 +331,7 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 		case <-shutCtx.Done():
 		}
 	}()
-	if err := srv.Shutdown(shutCtx); err != nil { //nolint:contextcheck // intentionally new context for graceful shutdown
+	if err := srv.Shutdown(shutCtx); err != nil {
 		return err
 	}
 	// Bound the wait for the serve goroutine. srv.Close() is invoked from

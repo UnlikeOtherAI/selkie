@@ -109,6 +109,7 @@ func (m *Manager) ensureInterface(ctx context.Context) error {
 }
 
 func interfaceExists(ctx context.Context, name string) (bool, error) {
+	//nolint:gosec // G204: fixed "ip" binary; name is the operator-configured WG interface name, not external input.
 	cmd := exec.CommandContext(ctx, "ip", "link", "show", "dev", name)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -135,6 +136,7 @@ func run(ctx context.Context, name string, args ...string) error {
 }
 
 func runOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	//nolint:gosec // G204: callers pass fixed "ip"/"wg" binaries with operator-configured interface names, not external input.
 	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

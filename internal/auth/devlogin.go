@@ -20,7 +20,7 @@ const (
 // ServeDevStatus returns whether dev-mode login is enabled.
 func (h *CallbackHandler) ServeDevStatus(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]bool{"enabled": h.cfg.DevMode}) //nolint:errcheck // best-effort write to HTTP response
+	_ = json.NewEncoder(w).Encode(map[string]bool{fieldEnabled: h.cfg.DevMode}) //nolint:errcheck // best-effort write to HTTP response
 }
 
 // ServeDevLogin upserts a hardcoded dev user and issues a session JWT.

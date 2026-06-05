@@ -23,16 +23,16 @@ jobs:
       - name: set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache: true
 
       - name: go vet
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1.6
+          version: v2.12.2
           args: --timeout=5m
 
       - name: caddyfile header smoke test
@@ -75,7 +75,12 @@ jobs:
         run: brew install swiftlint
 
       - name: swiftlint
-        run: ./App/ios/scripts/lint.sh
+        run: |
+          if [ -x ./App/ios/scripts/lint.sh ]; then
+            ./App/ios/scripts/lint.sh
+          else
+            echo "App/ios/scripts/lint.sh not present (iOS app not committed to this repo); skipping."
+          fi
 
   build-test:
     name: build + test
@@ -101,7 +106,7 @@ jobs:
       - name: set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache: true
 
       - name: verify modules
@@ -180,7 +185,7 @@ jobs:
       - name: set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache: true
 
       - uses: actions/setup-node@v4
@@ -198,6 +203,12 @@ jobs:
       - name: install playwright browsers
         working-directory: e2e
         run: pnpm exec playwright install --with-deps chromium
+
+      # global-setup.ts builds the admin UI (pnpm build in admin-ui/), which
+      # needs its dependencies installed first.
+      - name: install admin-ui deps
+        working-directory: admin-ui
+        run: pnpm install --frozen-lockfile
 
       - name: run e2e tests
         working-directory: e2e
