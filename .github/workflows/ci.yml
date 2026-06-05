@@ -23,7 +23,7 @@ jobs:
       - name: set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache: true
 
       - name: go vet
@@ -32,7 +32,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1.6
+          version: v2.12.2
           args: --timeout=5m
 
       - name: caddyfile header smoke test
@@ -106,7 +106,7 @@ jobs:
       - name: set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache: true
 
       - name: verify modules
@@ -185,7 +185,7 @@ jobs:
       - name: set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache: true
 
       - uses: actions/setup-node@v4
