@@ -25,6 +25,20 @@ Do not run `find`, `ls`, or `cat` on any path above this directory.
 - WireGuard via `golang.zx2c4.com/wireguard`
 - Docker Compose + Caddy for deployment
 
+## Production
+
+- Lives on the **shared Hetzner host `178.105.82.46`** (`ssh root@178.105.82.46`),
+  under `/srv/selkie`, alongside other projects. Reuses the shared Caddy
+  (`/srv/infra`, docker net `edge`) and shared Postgres 17 (net `db`); owns its
+  own Redis, coturn, and WireGuard hub. Compose:
+  `docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml …`.
+- Hosts: `admin.selkie.live`, `api.selkie.live`, `relay.selkie.live` → the host;
+  `selkie.live` apex stays on Cloud Run. See `docs/deployment.md`.
+- Never start a second Caddy/Postgres or touch other projects' configs on the host.
+- **SSO is not yet functional against live UOA** — the implemented contract is
+  HS256 but UOA needs RS256 + JWKS + PKCE. See the banner in `docs/sso.md` and
+  `https://authentication.unlikeotherai.com/llm`.
+
 ## Writing files
 
 Never use `apply_patch`. Write all files with shell commands (tee, printf,

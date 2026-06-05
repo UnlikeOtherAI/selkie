@@ -2,6 +2,10 @@
   "name": "selkie-admin",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
