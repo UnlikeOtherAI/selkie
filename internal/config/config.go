@@ -61,6 +61,11 @@ type Config struct {
 	DatabaseURL              string
 	RedisURL                 string
 	InternalSessionSecret    string
+	// InternalServiceKey authenticates trusted host-local service-to-service
+	// callers (the Coder API) on POST /api/v1/internal/mint-session. When empty
+	// the endpoint is disabled and returns 503. Loaded from
+	// SELKIE_INTERNAL_SERVICE_KEY.
+	InternalServiceKey string
 	TurnHost                 string
 	TurnPort                 int
 	CoturnSecret             string
@@ -132,6 +137,7 @@ func Load() Config {
 		DatabaseURL:              os.Getenv("DATABASE_URL"),
 		RedisURL:                 os.Getenv("REDIS_URL"),
 		InternalSessionSecret:    os.Getenv("INTERNAL_SESSION_SECRET"),
+		InternalServiceKey:       os.Getenv("SELKIE_INTERNAL_SERVICE_KEY"),
 		TurnHost:                 os.Getenv("TURN_HOST"),
 		TurnPort:                 getenvInt("TURN_PORT", 3478),
 		CoturnSecret:             os.Getenv("COTURN_SECRET"),
