@@ -41,6 +41,11 @@ const (
 	// not echo an OAuth `state` parameter, so this cookie + PKCE is the CSRF
 	// binding for the callback.
 	pkceVerifierCookieName = "selkie_pkce_verifier"
+
+	// sessionTokenTTL is the lifetime of every session JWT mintToken issues.
+	// Extracted so the mobile handoff exchange and the internal mint-session
+	// broker report an expiry that always tracks the signed token's exp.
+	sessionTokenTTL = 24 * time.Hour
 )
 
 // CallbackHandler handles the OAuth callback from UOA, upserting the user and issuing a session JWT.
@@ -50,11 +55,19 @@ type CallbackHandler struct {
 	audit   *audit.Logger
 	logger  *zap.Logger
 	limiter ratelimit.Limiter
+	// upsertUserFn indirects the user-upsert step so the internal S2S
+	// mint-session handler can be exercised without a live database. In
+	// production it points at h.upsertUser — the EXACT path a browser or
+	// mobile login uses — so the user row a brokered session produces is
+	// identical to a normal login (first user becomes super, etc.).
+	upsertUserFn func(ctx context.Context, claims *UOAClaims) (string, bool, error)
 }
 
 // NewCallbackHandler creates a CallbackHandler with the given database, config, and audit logger.
 func NewCallbackHandler(db *store.DB, cfg config.Config, auditor *audit.Logger, logger *zap.Logger, limiter ratelimit.Limiter) *CallbackHandler {
-	return &CallbackHandler{db: db, cfg: cfg, audit: auditor, logger: logger, limiter: limiter}
+	h := &CallbackHandler{db: db, cfg: cfg, audit: auditor, logger: logger, limiter: limiter}
+	h.upsertUserFn = h.upsertUser
+	return h
 }
 
 // Mount registers the auth routes on the given router.
@@ -65,6 +78,11 @@ func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Get("/auth/callback", h.ServeCallback)
 	r.Get("/auth/mobile/callback", h.ServeMobileCallback)
 	r.Post("/api/v1/mobile/handoff/exchange", h.ServeMobileHandoffExchange)
+	// Service-to-service session broker. Trusted host-local callers (the Coder
+	// API) exchange a UOA sub for a selkie mobile session JWT. Authenticated by
+	// a shared service key, NOT a browser session — so it lives outside any
+	// session-guarded group, like the other /api paths.
+	r.Post("/api/v1/internal/mint-session", h.ServeInternalMintSession)
 	r.Get("/auth/dev-status", h.ServeDevStatus)
 	r.Get("/auth/dev-login", h.ServeDevLogin)
 }
@@ -244,7 +262,7 @@ RETURNING u.id, u.email, u.display_name, u.is_super
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":      token,
-		"expires_in": int((24 * time.Hour).Seconds()),
+		"expires_in": int(sessionTokenTTL.Seconds()),
 	})
 }
 
@@ -447,7 +465,7 @@ func (h *CallbackHandler) mintToken(userID string, isSuper bool, email, displayN
 			Subject:   userID,
 			Audience:  jwt.ClaimStrings(audience),
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(sessionTokenTTL)),
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).
