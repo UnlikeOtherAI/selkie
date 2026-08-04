@@ -1,15 +1,32 @@
 # Selkie CLI
 
-The Selkie CLI is a Node.js daemon published on npm. It runs as an OS service
+The Selkie CLI is a Node.js daemon that will be published on npm under the
+scoped name `@unlikeotherai/selkie`. **It is not yet implemented** — this
+document is the design specification; no daemon source exists in this
+repository yet, and there is nothing to install today.
+
+> **Warning:** Do NOT run `npm install -g selkie`. The unscoped npm name
+> `selkie` belongs to an unrelated third-party package and must not be
+> installed.
+
+The daemon runs as an OS service
 on each enrolled device, maintains the local WireGuard interface, reports the
 device's service manifest to the control server, and listens for real-time
 session events over SSE.
 
 ## Install
 
+**Not available yet.** The daemon has not been implemented, so there is no
+package to install. When it ships, install it with:
+
 ```sh
-npm install -g selkie
+npm install -g @unlikeotherai/selkie
 ```
+
+Never run `npm install -g selkie` — the unscoped name `selkie` on npm belongs
+to an unrelated third-party package (a p5.js generative-art scaffolding CLI)
+and installing it would put a stranger's binary on your PATH under the name
+`selkie`.
 
 Requires Node.js 20+. The package ships native WireGuard support for macOS
 and Linux.

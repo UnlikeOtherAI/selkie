@@ -74,13 +74,18 @@ cp .env.example .env
 
 # Start with Docker Compose (server + postgres + redis + coturn)
 docker compose up
-
-# Enrol your first device (runs on the device being enrolled)
-npm install -g selkie
-selkie enroll
 ```
 
-After enrollment, open the admin UI, complete SSO login — the first login becomes the super user account.
+> **Device enrolment is not available yet.** The Selkie CLI daemon
+> ([docs/cli.md](docs/cli.md)) is a design specification — no daemon source exists in
+> this repository. When it ships it will be published under the scoped name
+> `@unlikeotherai/selkie`.
+>
+> ⚠️ **Never install the unscoped `selkie` npm package.** That name belongs to an
+> unrelated third party, so installing it puts a stranger's binary on your `PATH`
+> under the name `selkie`.
+
+Once enrolment exists, you will open the admin UI and complete SSO login — the first login becomes the super user account.
 
 ---
 
