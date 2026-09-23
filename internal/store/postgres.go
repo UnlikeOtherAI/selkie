@@ -59,27 +59,21 @@ func (db *DB) Ping(ctx context.Context) error {
 
 // RunMigrations applies all pending SQL migrations from the given directory.
 //
+// Every pending migration is applied inside one transaction that first takes a
+// transaction-scoped advisory lock. The lock is released by the transaction's
+// own COMMIT or ROLLBACK, so concurrent boots stay serialized and a boot that
+// dies mid-migration cannot leave the lock held. This also holds behind a
+// transaction-pooling proxy such as PgBouncer, which keeps no server session
+// between transactions: a session-level lock taken there could be released on
+// a different server connection, or never. A failed migration rolls back the
+// whole pending batch, so the schema is never left part-way through a boot.
+//
 //nolint:gocognit,gocyclo // sequential migration steps are clearer as one function
 func (db *DB) RunMigrations(ctx context.Context, dir string) error {
 	migrationDir, err := resolveMigrationDir(dir)
 	if err != nil {
 		return err
 	}
-
-	conn, err := db.Pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire migration connection: %w", err)
-	}
-	defer conn.Release()
-
-	if _, execErr := conn.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"); execErr != nil {
-		return fmt.Errorf("ensure schema_migrations: %w", execErr)
-	}
-
-	if _, lockErr := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); lockErr != nil {
-		return fmt.Errorf("acquire migration lock: %w", lockErr)
-	}
-	defer conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", migrationLockID) //nolint:errcheck // best-effort advisory unlock
 
 	entries, err := os.ReadDir(migrationDir)
 	if err != nil {
@@ -95,9 +89,23 @@ func (db *DB) RunMigrations(ctx context.Context, dir string) error {
 	}
 	sort.Strings(filenames)
 
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migrations: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit; best-effort after a failure
+
+	if _, lockErr := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", migrationLockID); lockErr != nil {
+		return fmt.Errorf("acquire migration lock: %w", lockErr)
+	}
+
+	if _, execErr := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"); execErr != nil {
+		return fmt.Errorf("ensure schema_migrations: %w", execErr)
+	}
+
 	for _, filename := range filenames {
 		var applied bool
-		if scanErr := conn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename = $1)", filename).Scan(&applied); scanErr != nil {
+		if scanErr := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename = $1)", filename).Scan(&applied); scanErr != nil {
 			return fmt.Errorf("check migration %s: %w", filename, scanErr)
 		}
 		if applied {
@@ -109,24 +117,17 @@ func (db *DB) RunMigrations(ctx context.Context, dir string) error {
 			return fmt.Errorf("read migration %s: %w", filename, readErr)
 		}
 
-		tx, beginErr := conn.Begin(ctx)
-		if beginErr != nil {
-			return fmt.Errorf("begin migration %s: %w", filename, beginErr)
-		}
-
 		if _, execErr := tx.Exec(ctx, string(contents)); execErr != nil {
-			tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after exec failure
 			return fmt.Errorf("apply migration %s: %w", filename, execErr)
 		}
 
 		if _, execErr := tx.Exec(ctx, "INSERT INTO schema_migrations (filename) VALUES ($1)", filename); execErr != nil {
-			tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after exec failure
 			return fmt.Errorf("record migration %s: %w", filename, execErr)
 		}
+	}
 
-		if commitErr := tx.Commit(ctx); commitErr != nil {
-			return fmt.Errorf("commit migration %s: %w", filename, commitErr)
-		}
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		return fmt.Errorf("commit migrations: %w", commitErr)
 	}
 
 	return nil

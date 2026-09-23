@@ -75,7 +75,10 @@ All commands run as `root` on the host.
    ```
 
    Migrations run automatically on server boot — there is no separate migrate
-   step.
+   step. All pending files apply in one transaction under a transaction-scoped
+   advisory lock, so concurrent boots serialize, a failed file rolls back the
+   whole batch, and the runner is safe behind a transaction-pooling proxy such
+   as PgBouncer.
 
 3. **Secrets / `.env`.** Write `/srv/selkie/.env` (mode 600, never committed).
    Generate fresh secrets on the host; the WireGuard keypair is generated with
