@@ -147,6 +147,10 @@ The current installation uses `ops`, including the persistent `ops_redis_data`
 volume. Fresh installations use `selkie`. Conflicting ownership labels stop the
 deploy before any containers are changed.
 
+For the coordinated Coder broker contract and identity cutover, follow
+[coordinated broker activation](coordinated-broker-activation.md), including the
+verified recovery point and migration rollback limits, before merging the release.
+
 ## Day-2 operations
 
 Canonical compose invocation (the wrapper supplies the existing project name and env-file):
