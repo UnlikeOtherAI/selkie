@@ -337,23 +337,11 @@ func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redir
 		return "", false, nil, errAuthFailed
 	}
 
-	userID, isSuper, err := h.upsertUser(ctx, uoaClaims)
+	userID, isSuper, id, err := h.admitFreshFamily(ctx, uoaClaims)
 	if err != nil {
 		return "", false, nil, errInternal
 	}
-
-	manager := h.sessions
-	profile, profileErr := currentUOAProfile(ctx, h.cfg, uoaClaims.Subject)
-	if profileErr != nil {
-		return "", false, nil, errAuthFailed
-	}
-	uoaClaims.Email = profile.Email
-	uoaClaims.DisplayName = profile.DisplayName
-	sessionID, sessionErr := manager.create(ctx, userID, uoaClaims)
-	if sessionErr != nil {
-		return "", false, nil, errInternal
-	}
-	uoaClaims.SessionID = sessionID
+	uoaClaims.SessionID = id
 	return userID, isSuper, uoaClaims, nil
 }
 

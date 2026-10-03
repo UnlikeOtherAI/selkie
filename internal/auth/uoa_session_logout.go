@@ -29,14 +29,14 @@ func (m *SessionManager) logout(ctx context.Context, id, userID string) error {
 	if err != nil {
 		return errSessionUnavailable
 	}
-	if _, err = tx.Exec(ctx, `UPDATE uoa_sessions SET closing=true WHERE id::text=$1`, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE uoa_sessions SET closing=true,cleanup_after=now() WHERE id::text=$1`, id); err != nil {
 		return errSessionUnavailable
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return errSessionUnavailable
 	}
 	if kind == capabilityRefresh {
-		if err = uoaRequest(ctx, m.cfg, http.MethodPost, "/auth/revoke", map[string]string{fieldRefreshToken: refresh, "scope": revokeScopeFamily}, nil); err != nil {
+		if err = uoaRequest(ctx, m.cfg, http.MethodPost, "/auth/revoke", map[string]string{fieldRefreshToken: refresh, fieldScope: revokeScopeFamily}, nil); err != nil {
 			return errSessionUnavailable
 		}
 	}

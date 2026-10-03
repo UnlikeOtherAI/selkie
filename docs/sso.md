@@ -67,7 +67,9 @@ turn an unconfirmed logout into a cleared local session.
 ## Verification
 
 `SELKIE_TEST_DATABASE_URL` enables the isolated PostgreSQL session tests in
-`internal/auth/uoa_sessions_integration_test.go`. They verify independent
+`internal/auth/uoa_sessions_integration_test.go` and migration/admission suites.
+The CI build/test job exports this URL for its disposable PostgreSQL service.
+They verify independent
 families, replay refusal, saved rotation before profile failures and retained
 logout retry state. The headless `e2e` suite verifies actual local server login,
 profile-free handles, device pages, and rendered debug controls using explicit

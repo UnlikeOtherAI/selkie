@@ -18,6 +18,7 @@ import (
 var errUOARefused = errors.New("UOA refused capability")
 
 const (
+	fieldScope          = "scope"
 	fieldError          = "error"
 	capabilityRefresh   = "refresh"
 	maxUOAResponseBytes = 65536

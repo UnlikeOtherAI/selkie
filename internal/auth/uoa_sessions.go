@@ -166,6 +166,10 @@ func (m *SessionManager) resolveBroker(ctx context.Context, tx pgx.Tx, sealed []
 }
 
 func (m *SessionManager) rotate(ctx context.Context, tx pgx.Tx, id string, sealed []byte, subject string) (*UOAClaims, error) {
+	// Once rotation starts, finish saving its successor even if the caller leaves.
+	// Profile reads and user actions still use the original request context.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	refresh, err := m.open(sealed)
 	if err != nil {
 		return nil, errSessionUnavailable

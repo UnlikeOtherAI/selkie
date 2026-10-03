@@ -30,7 +30,7 @@ heartbeat, WireGuard handshake, an actual service connection, and TURN fallback.
 
 The implementation now keeps stable UOA subjects and existing product UUIDs,
 reads profiles through the UOA API, seals independent refresh capabilities and
-validates delegated broker authority centrally. Migrations 004–005 remove the
+validates delegated broker authority centrally. Migrations 004–007 remove the
 old email/name copies and preserve device ownership and audit references.
 See [debug-login-sessions.md](debug-login-sessions.md) for the current contract.
 

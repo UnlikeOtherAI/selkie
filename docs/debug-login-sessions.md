@@ -28,7 +28,8 @@ minutes or the access-token expiry, whichever comes first. Every hit checks the
 durable lifecycle, user status and sealed-capability fingerprint; another
 instance rotating the capability invalidates the entry. Broker authority
 validation remains uncached on every request. Rotated refresh tokens
-are saved before profile reads, so a profile outage cannot discard a successor
+are saved before profile reads under a bounded 15-second persistence context,
+even if the caller disconnects, so a profile outage cannot discard a successor
 capability. Logout retains a retryable session state until UOA confirms family
 revocation. The internal broker accepts `{uoaSub, capability}` after its service-key check.
 The capability is a UOA-issued `session:broker` delegation for the exact Selkie
@@ -36,7 +37,11 @@ API origin. Confidential `/auth/session-broker/validate` checks current epoch,
 membership and delegation policy on every request. Selkie seals the capability,
 fetches the profile separately and caps the mobile handle at its five-minute
 expiry. Clients rebroker when it expires. The response stays `{token,expires_at}`.
-Supplied email or name fields are rejected. Broker logout deletes its local
+Supplied email or name fields are rejected. The operator must approve Coder's
+exact destination mapping. Current Selkie domain admission and target ban policy
+remain mandatory. With signed `org_features.enabled:false`, active source team
+claims are provenance for personal devices and grant no target team resources.
+Enabling team resources later also requires UOA's registered target-team policy. Broker logout deletes its local
 handle; these short-lived delegations have no refresh family. Source family
 logout does not revoke an already issued broker capability; its expiry and
 UOA epoch, membership and delegation policy still apply.
@@ -44,3 +49,12 @@ UOA epoch, membership and delegation policy still apply.
 Explicit development login is available only on an unbound local install with
 `DEV_MODE` and its confirmation flag. It uses a server-side development session,
 never a UOA identity fallback. A configured UOA install disables that endpoint.
+
+Before profile or local admission, new refresh families are sealed in closing,
+unowned session rows. A database constraint prevents activating them without a
+stable user reference. Rejection attempts immediate revocation; an outage keeps
+the closing row for a bounded maintenance retry (20 rows and 20 seconds per
+minute). Failed rows receive a two-minute retry delay so one failed family
+cannot starve later cleanup. A 30-second admission window prevents maintenance racing an active
+profile lookup. If staging itself fails, the backend attempts immediate upstream
+revocation. Migrations 006–007 add this cleanup lifecycle without profile data.

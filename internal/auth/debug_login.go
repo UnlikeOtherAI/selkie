@@ -113,28 +113,9 @@ func (h *CallbackHandler) ServeDebugRedeem(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusServiceUnavailable, "invalid UOA session response")
 		return
 	}
-	// On local admission failure, revoke the independent family UOA just minted.
-	admitted := false
-	defer func(ctx context.Context) {
-		if !admitted {
-			h.discardFamily(ctx, tokens.RefreshToken)
-		}
-	}(r.Context())
-	profile, err := currentUOAProfile(r.Context(), h.cfg, claims.Subject)
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "profile temporarily unavailable")
-		return
-	}
-	claims.Email = profile.Email
-	claims.DisplayName = profile.DisplayName
 	claims.RefreshToken = tokens.RefreshToken
 	claims.RefreshExpiresIn = tokens.RefreshTokenExpiresIn
-	userID, isSuper, err := h.upsertUser(r.Context(), claims)
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "session temporarily unavailable")
-		return
-	}
-	sessionID, err := h.sessions.create(r.Context(), userID, claims)
+	userID, isSuper, sessionID, err := h.admitFreshFamily(r.Context(), claims)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "session temporarily unavailable")
 		return
@@ -144,7 +125,6 @@ func (h *CallbackHandler) ServeDebugRedeem(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusServiceUnavailable, "session temporarily unavailable")
 		return
 	}
-	admitted = true
 	writeJSON(w, http.StatusOK, map[string]string{fieldToken: token})
 }
 
@@ -155,7 +135,7 @@ func validPreviousDebugCode(token string) bool {
 func (h *CallbackHandler) discardFamily(ctx context.Context, refresh string) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := uoaRequest(cleanup, h.cfg, http.MethodPost, "/auth/revoke", map[string]string{fieldRefreshToken: refresh, "scope": revokeScopeFamily}, nil); err != nil && h.logger != nil {
+	if err := uoaRequest(cleanup, h.cfg, http.MethodPost, "/auth/revoke", map[string]string{fieldRefreshToken: refresh, fieldScope: revokeScopeFamily}, nil); err != nil && h.logger != nil {
 		h.logger.Warn("failed to revoke rejected session family")
 	}
 }

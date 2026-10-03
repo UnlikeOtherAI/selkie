@@ -252,6 +252,8 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	auditor := audit.New(db, logger)
 
 	sessionManager := auth.NewSessionManager(db, cfg)
+	stopSessionMaintenance := sessionManager.StartMaintenance(ctx)
+	defer stopSessionMaintenance()
 	auth.NewCallbackHandler(db, cfg, auditor, logger, limiter, sessionManager).Mount(r)
 	admin.New(db, logger, cfg, auditor, limiter, sessionManager).Mount(r)
 	devices.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter, sessionManager).Mount(r)

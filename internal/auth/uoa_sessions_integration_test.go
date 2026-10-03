@@ -29,6 +29,7 @@ type sessionAuthorityFixture struct {
 	families          map[string]int
 	grants            map[string]int
 	revoked           map[int]bool
+	cancelOnRefresh   context.CancelFunc
 	profileReads      int
 	profileFails      bool
 	revokeFails       bool
@@ -87,6 +88,9 @@ func (f *sessionAuthorityFixture) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		delete(f.families, body["refresh_token"])
+		if f.cancelOnRefresh != nil {
+			f.cancelOnRefresh()
+		}
 		_ = json.NewEncoder(w).Encode(f.tokens(family))
 	case "/auth/debug-login/issue":
 		if !ok || f.revoked[family] {
@@ -404,5 +408,31 @@ func TestRenewInvalidatesPreviouslyDisplayedCode(t *testing.T) {
 	}
 	if response := sessionPost(t, h, "/auth/debug-login/redeem", "", fmt.Sprintf(`{"token":%q}`, fresh["token"])); response.Code != http.StatusOK {
 		t.Fatal("renewed code unusable")
+	}
+}
+
+func TestRequestCancellationDoesNotDiscardRefreshSuccessor(t *testing.T) {
+	h, authority, token := sessionFixture(t)
+	claims, _ := authenticateBearer("Bearer "+token, []byte(h.cfg.InternalSessionSecret))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	authority.cancelOnRefresh = cancel
+	if _, _, err := h.sessions.resolve(ctx, claims.SessionID, claims.Sub); err == nil {
+		t.Fatal("canceled request completed profile action")
+	}
+	var sealed []byte
+	if err := h.db.Pool.QueryRow(context.Background(), "SELECT sealed_capability FROM uoa_sessions WHERE id::text=$1", claims.SessionID).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := h.sessions.open(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == "source-refresh" || saved != authority.latest {
+		t.Fatal("browser cancellation discarded rotated successor")
+	}
+	authority.cancelOnRefresh = nil
+	if _, _, err := h.sessions.resolve(context.Background(), claims.SessionID, claims.Sub); err != nil {
+		t.Fatalf("successor could not recover: %v", err)
 	}
 }
