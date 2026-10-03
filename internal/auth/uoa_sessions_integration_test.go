@@ -143,6 +143,9 @@ func sessionFixture(t *testing.T) (*CallbackHandler, *sessionAuthorityFixture, s
 	authority := &sessionAuthorityFixture{subject: fmt.Sprintf("session-proof-%d", time.Now().UnixNano()), families: map[string]int{}, grants: map[string]int{}, revoked: map[int]bool{}}
 	upstream := httptest.NewServer(authority)
 	t.Cleanup(upstream.Close)
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), "DELETE FROM uoa_sessions WHERE subject=$1", authority.subject)
+	})
 	cfg := config.Config{UOABaseURL: upstream.URL, UOAConfigURL: upstream.URL + "/config", UOARedirectURL: "http://localhost:15344/auth/callback", UOASharedSecret: "fixture-secret", InternalSessionSecret: strings.Repeat("s", 32)}
 	h := NewCallbackHandler(db, cfg, nil, zap.NewNop(), fakeLimiter{decision: ratelimit.Decision{Allowed: true}})
 	claims := &UOAClaims{RefreshToken: "source-refresh", RefreshExpiresIn: 86400}
