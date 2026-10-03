@@ -122,19 +122,30 @@ or mistake it for a snapshot taken after services stopped.
    both immutable Coder image digests, its reviewed revision/checks, and green
    Selkie checks for the final integration head. Record the cutover owner and
    the Coder migration/revocation runbook.
-2. Stop both API services using their existing deployment procedures and verify
-   they remain stopped. This prevents old and new broker contracts from
-   overlapping. Recheck current counts and capture fresh protected
-   database/config/image recovery points for both products. Keep the Selkie
-   session-sealing secret unchanged. The existing baseline preserves restore
-   proof; the new snapshots preserve the actual cutover point.
-3. Keep Coder stopped and merge Selkie's green final PR only after the
+2. While old Coder still serves its configuration URL, invoke the approved exact
+   Coder image's exported `revokeLegacyUoaSessions` function with its mounted
+   dotenv configuration. This step performs confirmed legacy-family revocation
+   without migrations. UOA fetches Coder's configuration URL on every revoke
+   request, so stopping Coder first would make revocation unavailable. Do not
+   rely on an authority configuration cache. Retain the original protected
+   preflight backups; these upstream revocations cannot be undone by restore.
+3. Immediately stop both API services using their existing deployment procedures
+   and verify they remain stopped. Before any schema change, assert that Coder's
+   `user_identities` contains zero non-null `refreshTokenEnc` values. A concurrent
+   legacy admission can create another row between revocation and stopping;
+   any remaining row refuses the cutover before migrations. Preserve its sealed
+   material and retry revocation safely while Coder's configuration URL is live,
+   then repeat the stop and zero-row gate. Once the gate passes, capture fresh
+   protected database/config/image recovery points for both products. Keep the
+   Selkie session-sealing secret unchanged. Preserve the original baseline and
+   its restore proof alongside these fresh snapshots.
+4. Keep Coder stopped and merge Selkie's green final PR only after the
    coordinated release owner gives the activation signal. Every push to `main`
    automatically starts `deploy.yml`: it rsyncs into `/srv/selkie`, preserves
    `.env`, and invokes `./ops/compose-prod.sh up -d --build`. The workflow is not
    CI-gated, so merge is an activation action, not a harmless staging step. Do
    not dispatch a duplicate deployment concurrently.
-4. Follow Selkie's deployment for the exact merged SHA while Coder remains
+5. Follow Selkie's deployment for the exact merged SHA while Coder remains
    stopped. Startup automatically applies pending migrations before the HTTP
    server becomes ready. Verify ledger filenames 001–007, absence of mirrored
    profile columns, preservation of stable references, and the expected session
@@ -143,19 +154,21 @@ or mistake it for a snapshot taken after services stopped.
    their success alone does not prove broker or identity behavior. If deployment
    or verification fails, keep Coder stopped and follow the schema-aware recovery
    procedure below.
-5. After Selkie's new schema and readiness are verified, execute Coder's approved
+6. After Selkie's new schema and readiness are verified, execute Coder's approved
    exact release deploy command with the verified immutable images and
    configuration. That command couples legacy-family revocation, migrations,
-   API/admin activation and health verification. Record each result and the
-   running release identity; an image recreation alone does not establish
+   API/admin activation and health verification. Its revocation phase must be a
+   no-op after the completed zero-row gate; it must not attempt the first legacy
+   revocation while Coder's configuration endpoint is stopped. Record each result
+   and the running release identity; an image recreation alone does not establish
    migration completion. There is no separate established broker-traffic gate,
    so do not start Coder before this step. Broker traffic resumes only with the
    new compatible pair.
-6. Test actual UOA login and the new Coder-to-Selkie delegation, independent
+7. Test actual UOA login and the new Coder-to-Selkie delegation, independent
    session admission, five-minute expiry and rebroker behavior. Confirm legacy
    profile-bearing broker bodies fail, revoked/expired authority fails, and an
    authority outage is retryable.
-7. Verify Selkie's rendered login/authenticated debug control at desktop/mobile
+8. Verify Selkie's rendered login/authenticated debug control at desktop/mobile
    sizes, JSON with exactly `{url,token}`, bare-code input, thirty-minute expiry,
    single use, renewal invalidation, independent recipient/source families and
    confirmed family-only logout. Record real-provider proof separately from
