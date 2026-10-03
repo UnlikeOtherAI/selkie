@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { createHmac } from "node:crypto";
 import { devLogin, getState } from "../helpers";
 
 test.describe("Auth", () => {
@@ -33,12 +34,16 @@ test.describe("Auth", () => {
 });
 
 test.describe("Debug session popup", () => {
-  test("exports an existing session and imports it from the login popup", async ({ page }) => {
+  test("exports an existing session and imports it from the login popup", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await devLogin(page);
     await page.getByRole("button", { name: "Debug session snapshot" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     const snapshot = await dialog.getByLabel("Session snapshot", { exact: true }).inputValue();
+    await dialog.getByRole("button", { name: "Copy JSON", exact: true }).click();
+    await expect(dialog.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(snapshot);
     const data = JSON.parse(snapshot);
     expect(data.product).toBe("selkie");
     expect(data.version).toBe(1);
@@ -70,4 +75,80 @@ test.describe("Debug session popup", () => {
     await page.getByRole("button", { name: "Debug session snapshot" }).click();
     await expect(input).toHaveValue("");
   });
+});
+
+function signedTestToken(audience: string, expiry: number): string {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const body = Buffer.from(JSON.stringify({ sub: "test-user", iss: "selkie", aud: [audience],
+    is_super: true, iat: Math.floor(Date.now() / 1000), exp: expiry })).toString("base64url");
+  const signingInput = `${header}.${body}`;
+  // This is the disposable server's public test fixture, never a production key.
+  const signature = createHmac("sha256", "e2e-test-secret-that-is-long-enough").update(signingInput).digest("base64url");
+  return `${signingInput}.${signature}`;
+}
+
+for (const scenario of ["malformed", "expired", "mobile"] as const) {
+  test(`debug session rejects ${scenario} input`, async ({ page, request }) => {
+    const { baseURL } = getState();
+    await page.goto(`${baseURL}/login`);
+    await page.getByRole("button", { name: "Debug session snapshot" }).click();
+    const dialog = page.getByRole("dialog");
+    const input = dialog.getByLabel("Session snapshot", { exact: true });
+    let snapshot = "{invalid JSON";
+    if (scenario !== "malformed") {
+      const token = signedTestToken(scenario === "mobile" ? "mobile" : "admin",
+        Math.floor(Date.now() / 1000) + (scenario === "expired" ? -120 : 3600));
+      if (scenario === "mobile") {
+        const validAdmin = signedTestToken("admin", Math.floor(Date.now() / 1000) + 3600);
+        const accepted = await request.get(`${baseURL}/api/v1/system/info`, {
+          headers: { Authorization: `Bearer ${validAdmin}` },
+        });
+        expect(accepted.status()).toBe(200);
+      }
+      // Independently prove the real backend rejects both validly signed fixtures.
+      const response = await request.get(`${baseURL}/api/v1/system/info`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status()).toBe(401);
+      snapshot = JSON.stringify({ product: "selkie", version: 1, token });
+    }
+    await input.fill(snapshot);
+    await dialog.getByRole("button", { name: "Log in with session", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+    await expect(input).toHaveValue("");
+    expect(new URL(page.url()).pathname).toBe("/login");
+    expect(await page.evaluate(() => localStorage.getItem("selkie_jwt"))).toBeNull();
+  });
+}
+
+test("closing debug popup cancels a pending validated import", async ({ page }) => {
+  await devLogin(page);
+  const token = await page.evaluate(() => localStorage.getItem("selkie_jwt"));
+  await page.click("button[title='Sign out']");
+  await page.waitForURL("**/login");
+  let release!: () => void;
+  let started!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const requested = new Promise<void>((resolve) => { started = resolve; });
+  await page.route("**/api/v1/system/info", async (route) => {
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    started();
+    await pending;
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "Debug session snapshot" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Session snapshot", { exact: true }).fill(JSON.stringify({ product: "selkie", version: 1, token }));
+  await dialog.getByRole("button", { name: "Log in with session", exact: true }).click();
+  await requested;
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  const delivered = page.waitForResponse("**/api/v1/system/info");
+  release();
+  await delivered;
+  await page.getByRole("button", { name: "Debug session snapshot" }).click();
+  await expect(dialog.getByLabel("Session snapshot", { exact: true })).toHaveValue("");
+  expect(new URL(page.url()).pathname).toBe("/login");
+  expect(await page.evaluate(() => localStorage.getItem("selkie_jwt"))).toBeNull();
 });
