@@ -18,12 +18,14 @@ is a custom OAuth 2.0 service with a signed-config trust model.
 >   with the `sha256(domain + client_secret)` bearer, and the returned access
 >   token is **decoded, not verified** (it is HS256 with UOA's own secret).
 >
-> **Remaining go-live steps (human, one-time):** hitting login has registered
-> `api.selkie.live` as a **PENDING** integration. A UOA superuser must approve
-> it in `/admin`; the contact email then receives a one-time link to claim the
-> per-domain `client_secret`. Set `UOA_SHARED_SECRET=<client_secret>` in the
-> production `.env` and restart the server. Until that secret is set the
-> server-to-server token exchange will fail with `auth failed`.
+> **Production check (2026-10-03):** browser SSO succeeds and the admin UI
+> loads. The per-domain secret and signing key are configured; the previous
+> pending-approval note is outdated. New installations still need UOA approval.
+>
+> **Identity authority issue:** the current implementation persists UOA email
+> and display name in `users`. This conflicts with the project identity rules.
+> See [first-use-readiness.md](first-use-readiness.md) for the required API-backed
+> refactor and migration before wider use.
 >
 > NOTE: the prose below this banner predates the implementation and still
 > describes the older HS256 assumption; treat the banner and

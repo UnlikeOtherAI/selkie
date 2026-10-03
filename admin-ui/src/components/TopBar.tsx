@@ -1,4 +1,5 @@
 import { StatusDot } from "./StatusDot";
+import { DebugSessionButton } from "./DebugSessionButton";
 
 interface TopBarProps {
   title: string;
@@ -7,6 +8,7 @@ interface TopBarProps {
 export function TopBar({ title }: TopBarProps) {
   return (
     <header className="h-14 shrink-0 flex items-center justify-between px-6 border-b border-slate-800 bg-slate-900/60">
+      <DebugSessionButton mode="export" />
       <div id="page-title" className="text-sm font-semibold text-slate-100">
         {title}
       </div>

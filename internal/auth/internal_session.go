@@ -28,9 +28,9 @@ const (
 // the Ledger ProxyToken provisioning pattern), rather than selkie's snake_case
 // browser/mobile JSON.
 type internalMintSessionRequest struct {
-	UOASub      string `json:"uoaSub"`
+	UOASub      string `json:"uoaSub"` //nolint:tagliatelle // Coder service contract uses camelCase.
 	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
+	DisplayName string `json:"displayName"` //nolint:tagliatelle // Coder service contract uses camelCase.
 }
 
 // ServeInternalMintSession is the service-to-service session broker. A trusted
@@ -131,8 +131,8 @@ func (h *CallbackHandler) auditInternalMintSession(ctx context.Context, r *http.
 	if auditErr := h.audit.Log(ctx, audit.Event{
 		ActorUserID: &userID,
 		Action:      "internal.mint_session",
-		Outcome:     "success",
-		TargetTable: "users",
+		Outcome:     auditOutcomeSuccess,
+		TargetTable: auditTargetUsers,
 		TargetID:    &userID,
 		RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 		UserAgent:   audit.TruncateUserAgent(r.UserAgent()),
