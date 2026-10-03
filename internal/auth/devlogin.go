@@ -20,13 +20,13 @@ const (
 // ServeDevStatus returns whether dev-mode login is enabled.
 func (h *CallbackHandler) ServeDevStatus(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]bool{fieldEnabled: h.cfg.DevMode}) //nolint:errcheck // best-effort write to HTTP response
+	_ = json.NewEncoder(w).Encode(map[string]bool{fieldEnabled: h.cfg.DevMode && h.cfg.UOAConfigURL == ""}) //nolint:errcheck // best-effort write to HTTP response
 }
 
 // ServeDevLogin upserts a hardcoded dev user and issues a session JWT.
 // Returns 404 when DevMode is false.
 func (h *CallbackHandler) ServeDevLogin(w http.ResponseWriter, r *http.Request) {
-	if !h.cfg.DevMode {
+	if !h.cfg.DevMode || h.cfg.UOAConfigURL != "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -60,7 +60,12 @@ func (h *CallbackHandler) ServeDevLogin(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Dev-login intentionally mints both audiences so e2e tests can hit admin and mobile routes with one token; production paths mint a single audience.
-	token, err := h.mintToken(userID, isSuper, DevUserEmail, DevUserDisplayName, DevUserPicture, []string{AudienceAdmin, AudienceMobile})
+	sessionID, err := h.sessions.createDevelopment(r.Context(), userID)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	token, err := h.mintSessionToken(userID, isSuper, sessionID, []string{AudienceAdmin, AudienceMobile})
 	if err != nil {
 		http.Error(w, "token error", http.StatusInternalServerError)
 		return

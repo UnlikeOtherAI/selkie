@@ -51,9 +51,10 @@ const (
 
 // Claims holds the authenticated user identity extracted from a JWT.
 type Claims struct {
-	Sub      string
-	IsSuper  bool
-	Audience []string
+	SessionID string
+	Sub       string
+	IsSuper   bool
+	Audience  []string
 }
 
 // HasAudience reports whether the claims include the given audience value.
@@ -82,7 +83,7 @@ type sessionClaims struct {
 // expired tokens. When limiter is non-nil, reject-audit writes are gated
 // behind a per-peer-IP token bucket so an unauthenticated flood cannot
 // amplify into one DB write per request.
-func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter) func(http.Handler) http.Handler {
+func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter, validators ...SessionValidator) func(http.Handler) http.Handler {
 	secret := []byte(cfg.InternalSessionSecret)
 	trusted := cfg.TrustedProxyCIDRs
 
@@ -115,6 +116,15 @@ func Middleware(cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limi
 			claims, reason := authenticateBearer(r.Header.Get("Authorization"), secret)
 			if reason != "" {
 				reject(w, r, reason)
+				return
+			}
+			claims, err := validateSession(r.Context(), claims, validators)
+			if err != nil {
+				if errors.Is(err, errSessionExpired) {
+					reject(w, r, "expired_session")
+				} else {
+					writeJSONError(w, http.StatusServiceUnavailable, "session temporarily unavailable")
+				}
 				return
 			}
 			ctx := context.WithValue(r.Context(), claimsContextKey, claims)
@@ -162,9 +172,10 @@ func authenticateBearer(authorization string, secret []byte) (Claims, string) {
 	}
 
 	claims := Claims{
-		Sub:      parsedClaims.Subject,
-		IsSuper:  parsedClaims.IsSuper,
-		Audience: []string(parsedClaims.Audience),
+		SessionID: parsedClaims.ID,
+		Sub:       parsedClaims.Subject,
+		IsSuper:   parsedClaims.IsSuper,
+		Audience:  []string(parsedClaims.Audience),
 	}
 	if !claims.HasAudience(AudienceAdmin) && !claims.HasAudience(AudienceMobile) {
 		return Claims{}, "unrecognized_audience"
@@ -226,5 +237,5 @@ func ClaimsFromContext(ctx context.Context) (Claims, bool) {
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"}) //nolint:errcheck // best-effort write to HTTP response
+	_ = json.NewEncoder(w).Encode(map[string]string{fieldError: "unauthorized"}) //nolint:errcheck // best-effort write to HTTP response
 }

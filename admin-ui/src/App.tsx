@@ -3,7 +3,7 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-
 import {
   getToken,
   setToken,
-  parseJWT,
+  removeToken,
   isTokenValid,
   extractTokenFromHash,
   type JWTClaims,
@@ -28,6 +28,8 @@ function RequireAuth({ children, claims }: { children: React.ReactNode; claims: 
 export function App() {
   const [claims, setClaims] = useState<JWTClaims | null>(null);
   const [checked, setChecked] = useState(false);
+ const [unavailable,setUnavailable]=useState(false);
+ const [logoutPending,setLogoutPending]=useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -39,16 +41,28 @@ export function App() {
     }
 
     const stored = getToken();
-    if (stored && isTokenValid(stored)) {
-      setClaims(parseJWT(stored));
-      // If on login page with valid token, redirect to admin.
-      if (location.pathname === "/login") {
-        navigate("/admin", { replace: true });
-      }
-    }
-    setChecked(true);
+    if (!stored || !isTokenValid(stored)) { setChecked(true); return; }
+    fetch("/auth/session", { headers: { Authorization: `Bearer ${stored}` }, cache: "no-store", redirect: "error" })
+      .then(async (response) => {
+        if (response.status === 401) { removeToken(); setChecked(true); return; }
+        if (!response.ok) {
+          const status: { logout_pending?: boolean } = await response.json();
+          setLogoutPending(status.logout_pending === true);
+          throw new Error("Session unavailable");
+        }
+        const profile: JWTClaims = await response.json();
+        setClaims(profile); setChecked(true);
+        if (location.pathname === "/login") navigate("/admin", { replace: true });
+      }).catch(() => setUnavailable(true));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  async function retrySession() {
+    if (!logoutPending) { window.location.reload(); return; }
+    const response = await fetch("/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, redirect: "error" }).catch(() => null);
+    if (response?.ok) { removeToken(); window.location.replace("/login"); }
+  }
+
+  if (unavailable) return <div className="h-full flex flex-col items-center justify-center gap-4"><p>Session temporarily unavailable.</p><button onClick={() => void retrySession()}>Retry</button></div>;
   if (!checked) return null;
 
   return (

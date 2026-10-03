@@ -1,5 +1,4 @@
 import { test, expect } from "@playwright/test";
-import { createHmac } from "node:crypto";
 import { devLogin, getState } from "../helpers";
 
 test.describe("Auth", () => {
@@ -33,122 +32,111 @@ test.describe("Auth", () => {
   });
 });
 
-test.describe("Debug session popup", () => {
-  test("exports an existing session and imports it from the login popup", async ({ page, context }) => {
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-    await devLogin(page);
-    await page.getByRole("button", { name: "Debug session snapshot" }).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    const snapshot = await dialog.getByLabel("Session snapshot", { exact: true }).inputValue();
-    await dialog.getByRole("button", { name: "Copy JSON", exact: true }).click();
-    await expect(dialog.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(snapshot);
-    const data = JSON.parse(snapshot);
-    expect(data.product).toBe("selkie");
-    expect(data.version).toBe(1);
-    await dialog.getByRole("button", { name: "Cancel" }).click();
-    await page.click("button[title='Sign out']");
-    await page.waitForURL("**/login");
-    await page.getByRole("button", { name: "Debug session snapshot" }).click();
-    await dialog.getByLabel("Session snapshot", { exact: true }).fill(snapshot);
-    await dialog.getByRole("button", { name: "Log in with session", exact: true }).click();
-    await page.waitForURL("**/admin");
-    await expect(page.locator("#user-email")).toContainText("Agent Smith");
-  });
+// Browser fixtures cover the rendered control; Go database tests prove UOA family semantics.
+const codeA="A".repeat(43);
+const codeB="B".repeat(43);
 
-  test("rejects forged sessions and clears sensitive popup input", async ({ page }) => {
-    const { baseURL } = getState();
-    await page.goto(`${baseURL}/login`);
-    await page.getByRole("button", { name: "Debug session snapshot" }).click();
-    const dialog = page.getByRole("dialog");
-    const input = dialog.getByLabel("Session snapshot", { exact: true });
-    const forged = `${Buffer.from(JSON.stringify({ alg: "HS256" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "forged", exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url")}.invalid`;
-    await input.fill(JSON.stringify({ product: "selkie", version: 1, token: forged }));
-    await dialog.getByRole("button", { name: "Log in with session", exact: true }).click();
-    await expect(dialog.getByRole("alert")).toContainText("cannot access");
-    await expect(input).toHaveValue("");
-    expect(new URL(page.url()).pathname).toBe("/login");
-    expect(await page.evaluate(() => localStorage.getItem("selkie_jwt"))).toBeNull();
-    await input.fill("sensitive snapshot");
-    await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Debug session snapshot" }).click();
-    await expect(input).toHaveValue("");
+async function debugRoutes(page: import("@playwright/test").Page) {
+ let displayed=codeA;
+ await page.route("**/auth/debug-login/issue",async route=>{
+  const body=route.request().postDataJSON();
+  if(body.previous_token){expect(body.previous_token).toBe(displayed);displayed=codeB;}
+  await route.fulfill({json:{url:new URL(route.request().url()).origin+"/",token:displayed}});
+ });
+ return () => displayed;
+}
+
+for(const width of [390,1440]) {
+ test(`debug create renew and copy at ${width}px`,async({page,context})=>{
+  await page.setViewportSize({width,height:900});
+  await context.grantPermissions(["clipboard-read","clipboard-write"]);
+  const displayed=await debugRoutes(page);
+  await devLogin(page);
+  await page.getByRole("button",{name:"Debug login",exact:true}).click();
+  const dialog=page.getByRole("dialog");
+  await dialog.getByRole("button",{name:"Create code",exact:true}).click();
+  const input=dialog.getByLabel("Login code or JSON",{exact:true});
+  await expect.poll(async()=>JSON.parse((await input.inputValue()) || "{}").token).toBe(codeA);
+  await dialog.getByRole("button",{name:"Renew",exact:true}).click();
+  await expect.poll(async()=>JSON.parse((await input.inputValue()) || "{}").token).toBe(codeB);
+  expect(displayed()).toBe(codeB);
+  const value=JSON.parse(await input.inputValue());expect(Object.keys(value).sort()).toEqual(["token","url"]);
+  await dialog.getByRole("button",{name:"Copy JSON",exact:true}).click();
+  expect(JSON.parse(await page.evaluate(()=>navigator.clipboard.readText()))).toEqual(value);
+  await page.screenshot({path:`/tmp/selkie-debug-${width}-signed.png`});
+ });
+}
+
+for(const shape of ["bare","json"]) {
+ test(`login accepts ${shape} one-time code`,async({page})=>{
+  const {baseURL}=getState();
+  await page.setViewportSize({width:shape==="bare"?390:1440,height:900});
+  await page.route("**/auth/debug-login/redeem",async route=>{
+   expect(route.request().postDataJSON()).toEqual({token:codeA});
+   await route.fulfill({json:{token:recipientFixture()}});
   });
+  await page.route("**/auth/session",route=>route.fulfill({json:{sub:"recipient",display_name:"Recipient",is_super:true}}));
+  await page.goto(`${baseURL}/login`);
+  await page.getByRole("button",{name:"Debug login",exact:true}).click();
+  const dialog=page.getByRole("dialog");
+  await dialog.getByLabel("Login code or JSON",{exact:true}).fill(shape==="bare"?codeA:JSON.stringify({url:baseURL+"/",token:codeA}));
+  await page.screenshot({path:`/tmp/selkie-debug-${shape}-login.png`});
+  await dialog.getByRole("button",{name:"Log in with code",exact:true}).click();
+  await page.waitForURL("**/admin");
+  expect(await page.evaluate(()=>localStorage.getItem("selkie_jwt"))).toBe(recipientFixture());
+ });
+}
+
+function recipientFixture() {
+ const header=Buffer.from(JSON.stringify({alg:"HS256"})).toString("base64url");
+ const body=Buffer.from(JSON.stringify({sub:"recipient",jti:"independent",exp:4102444800})).toString("base64url");
+ return `${header}.${body}.browser-fixture`;
+}
+
+for(const input of ["{invalid JSON",JSON.stringify({url:"https://another.invalid/",token:codeA}),JSON.stringify({product:"selkie",version:1,token:"retired-session"})]) {
+ test(`login rejects invalid payload ${input.slice(0,24)}`,async({page})=>{
+  const {baseURL}=getState();await page.goto(`${baseURL}/login`);
+  await page.getByRole("button",{name:"Debug login",exact:true}).click();
+  const dialog=page.getByRole("dialog");const field=dialog.getByLabel("Login code or JSON",{exact:true});
+  await field.fill(input);await dialog.getByRole("button",{name:"Log in with code",exact:true}).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();await expect(field).toHaveValue("");
+  expect(await page.evaluate(()=>localStorage.getItem("selkie_jwt"))).toBeNull();
+ });
+}
+
+test("used code and failed logout remain retryable",async({page})=>{
+ const {baseURL}=getState();await page.route("**/auth/debug-login/redeem",route=>route.fulfill({status:401,json:{error:"used"}}));
+ await page.goto(`${baseURL}/login`);await page.getByRole("button",{name:"Debug login",exact:true}).click();
+ const dialog=page.getByRole("dialog");await dialog.getByLabel("Login code or JSON",{exact:true}).fill(codeA);
+ await dialog.getByRole("button",{name:"Log in with code",exact:true}).click();
+ await expect(dialog.getByRole("alert")).toContainText("already been used");
+ await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await devLogin(page);
+ const token=await page.evaluate(()=>localStorage.getItem("selkie_jwt"));
+ await page.route("**/auth/logout",route=>route.fulfill({status:503,json:{error:"retry"}}));
+ await page.click("button[title='Sign out']");await expect(page.getByRole("alert")).toContainText("Try again");
+ expect(await page.evaluate(()=>localStorage.getItem("selkie_jwt"))).toBe(token);
 });
 
-function signedTestToken(audience: string, expiry: number): string {
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const body = Buffer.from(JSON.stringify({ sub: "test-user", iss: "selkie", aud: [audience],
-    is_super: true, iat: Math.floor(Date.now() / 1000), exp: expiry })).toString("base64url");
-  const signingInput = `${header}.${body}`;
-  // This is the disposable server's public test fixture, never a production key.
-  const signature = createHmac("sha256", "e2e-test-secret-that-is-long-enough").update(signingInput).digest("base64url");
-  return `${signingInput}.${signature}`;
-}
+test("pending code cannot expose a previous account",async({page})=>{
+ await devLogin(page);
+ let release!:()=>void;let started!:()=>void;
+ const pending=new Promise<void>(resolve=>{release=resolve});const requested=new Promise<void>(resolve=>{started=resolve});
+ await page.route("**/auth/debug-login/issue",async route=>{started();await pending;await route.fulfill({json:{url:new URL(route.request().url()).origin+"/",token:codeA}})});
+ await page.getByRole("button",{name:"Debug login",exact:true}).click();const dialog=page.getByRole("dialog");
+ await dialog.getByRole("button",{name:"Create code",exact:true}).click();await requested;
+ await page.evaluate(token=>localStorage.setItem("selkie_jwt",token),recipientFixture());release();
+ await expect(dialog.getByRole("button",{name:"Create code",exact:true})).toBeEnabled();
+ await expect(dialog.getByLabel("Login code or JSON",{exact:true})).toHaveValue("");
+});
 
-for (const scenario of ["malformed", "expired", "mobile"] as const) {
-  test(`debug session rejects ${scenario} input`, async ({ page, request }) => {
-    const { baseURL } = getState();
-    await page.goto(`${baseURL}/login`);
-    await page.getByRole("button", { name: "Debug session snapshot" }).click();
-    const dialog = page.getByRole("dialog");
-    const input = dialog.getByLabel("Session snapshot", { exact: true });
-    let snapshot = "{invalid JSON";
-    if (scenario !== "malformed") {
-      const token = signedTestToken(scenario === "mobile" ? "mobile" : "admin",
-        Math.floor(Date.now() / 1000) + (scenario === "expired" ? -120 : 3600));
-      if (scenario === "mobile") {
-        const validAdmin = signedTestToken("admin", Math.floor(Date.now() / 1000) + 3600);
-        const accepted = await request.get(`${baseURL}/api/v1/system/info`, {
-          headers: { Authorization: `Bearer ${validAdmin}` },
-        });
-        expect(accepted.status()).toBe(200);
-      }
-      // Independently prove the real backend rejects both validly signed fixtures.
-      const response = await request.get(`${baseURL}/api/v1/system/info`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      expect(response.status()).toBe(401);
-      snapshot = JSON.stringify({ product: "selkie", version: 1, token });
-    }
-    await input.fill(snapshot);
-    await dialog.getByRole("button", { name: "Log in with session", exact: true }).click();
-    await expect(dialog.getByRole("alert")).toBeVisible();
-    await expect(input).toHaveValue("");
-    expect(new URL(page.url()).pathname).toBe("/login");
-    expect(await page.evaluate(() => localStorage.getItem("selkie_jwt"))).toBeNull();
-  });
-}
-
-test("closing debug popup cancels a pending validated import", async ({ page }) => {
-  await devLogin(page);
-  const token = await page.evaluate(() => localStorage.getItem("selkie_jwt"));
-  await page.click("button[title='Sign out']");
-  await page.waitForURL("**/login");
-  let release!: () => void;
-  let started!: () => void;
-  const pending = new Promise<void>((resolve) => { release = resolve; });
-  const requested = new Promise<void>((resolve) => { started = resolve; });
-  await page.route("**/api/v1/system/info", async (route) => {
-    const response = await route.fetch();
-    expect(response.status()).toBe(200);
-    started();
-    await pending;
-    await route.fulfill({ response });
-  });
-  await page.getByRole("button", { name: "Debug session snapshot" }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Session snapshot", { exact: true }).fill(JSON.stringify({ product: "selkie", version: 1, token }));
-  await dialog.getByRole("button", { name: "Log in with session", exact: true }).click();
-  await requested;
-  await page.keyboard.press("Escape");
-  await expect(dialog).not.toBeVisible();
-  const delivered = page.waitForResponse("**/api/v1/system/info");
-  release();
-  await delivered;
-  await page.getByRole("button", { name: "Debug session snapshot" }).click();
-  await expect(dialog.getByLabel("Session snapshot", { exact: true })).toHaveValue("");
-  expect(new URL(page.url()).pathname).toBe("/login");
-  expect(await page.evaluate(() => localStorage.getItem("selkie_jwt"))).toBeNull();
+test("reload after unconfirmed logout keeps a working retry",async({page})=>{
+ await devLogin(page);const token=await page.evaluate(()=>localStorage.getItem("selkie_jwt"));
+ let attempts=0;
+ await page.route("**/auth/logout",route=>{attempts++;return route.fulfill({status:attempts===1?503:204,...(attempts===1?{json:{error:"retry"}}:{})})});
+ await page.click("button[title='Sign out']");await expect(page.getByRole("alert")).toContainText("Try again");
+ await page.route("**/auth/session",route=>route.fulfill({status:503,json:{error:"pending",logout_pending:true}}));
+ await page.reload();await expect(page.getByRole("button",{name:"Retry",exact:true})).toBeVisible();
+ expect(await page.evaluate(()=>localStorage.getItem("selkie_jwt"))).toBe(token);
+ await page.getByRole("button",{name:"Retry",exact:true}).click();await page.waitForURL("**/login");
+ expect(attempts).toBe(2);expect(await page.evaluate(()=>localStorage.getItem("selkie_jwt"))).toBeNull();
 });

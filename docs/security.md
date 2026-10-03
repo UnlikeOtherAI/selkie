@@ -10,12 +10,17 @@ Selkie has three distinct credential types:
 
 | Credential | Holder | Format | Storage |
 |---|---|---|---|
-| UOA access token | browser / mobile app | HS256 JWT from UOA | browser memory or mobile secure storage |
+| UOA scoped capability | Selkie backend | rotating refresh token or bounded delegated capability | encrypted in PostgreSQL; never sent to browser/mobile |
 | internal session token | browser / mobile app | HS256 JWT from Selkie | `localStorage` in the SPA, Keychain/Keystore on mobile |
 | device credential | CLI daemon | random 32 bytes, base64url-encoded | `~/.selkie/credential` on disk, bcrypt hash in Postgres |
 
 The browser never gets raw device credentials. The CLI never gets a user
 session token.
+
+The local JWT contains a server-side session reference and product administration
+claims; human profile fields are fetched from UOA and stay in memory. Every
+protected request checks current server-side session/UOA authority.
+See [debug-login-sessions.md](debug-login-sessions.md).
 
 ## Rate limits
 

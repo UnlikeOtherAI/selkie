@@ -1,210 +1,75 @@
-# SSO Integration
+# UOA sign-in
 
-Identity is delegated to **`authentication.unlikeotherai.com`** (UOA —
-"UnlikeOtherAuthenticator"). This document records the contract because UOA is
-**not** a drop-in OIDC provider; the brief refers to OIDC generically, but UOA
-is a custom OAuth 2.0 service with a signed-config trust model.
+UnlikeOtherAI is Selkie's sole human identity authority. Selkie uses UOA's
+custom authorization-code contract with a signed integration configuration.
+The deployed SSO inspection on 2026-10-03 predates the new independent-session
+migration; deployment verification must establish the new exact revision.
 
-> ✅ **STATUS (2026-06-05): the live UOA contract is implemented.** Selkie now
-> conforms to the authoritative guide at
-> `https://authentication.unlikeotherai.com/llm`:
->
-> - the config JWT served at `/auth/uoa-config` is signed **RS256** with a
->   `kid`, and the public key is published at `GET /.well-known/jwks.json`
->   (host = the `domain` claim). Key material comes from `UOA_CONFIG_SIGNING_KEY`;
-> - the browser flow generates **PKCE** (`code_challenge`/`code_verifier`, S256),
->   stashing the verifier in an HttpOnly cookie across the round-trip;
-> - the `/auth/token` exchange sends `code` + `redirect_url` + `code_verifier`
->   with the `sha256(domain + client_secret)` bearer, and the returned access
->   token is **decoded, not verified** (it is HS256 with UOA's own secret).
->
-> **Production check (2026-10-03):** browser SSO succeeds and the admin UI
-> loads. The per-domain secret and signing key are configured; the previous
-> pending-approval note is outdated. New installations still need UOA approval.
->
-> **Identity authority issue:** the current implementation persists UOA email
-> and display name in `users`. This conflicts with the project identity rules.
-> See [first-use-readiness.md](first-use-readiness.md) for the required API-backed
-> refactor and migration before wider use.
->
-> NOTE: the prose below this banner predates the implementation and still
-> describes the older HS256 assumption; treat the banner and
-> `internal/auth/{uoa_config,uoa,configjwt,callback}.go` as authoritative.
+## Configuration and approval
 
-## Key differences from plain OIDC
+`/auth/uoa-config` serves an RS256-signed JWT with `kid`. Its public key is
+published at `/.well-known/jwks.json` on the configured domain. Configure
+`UOA_CONFIG_SIGNING_KEY`, `UOA_CONFIG_SIGNING_KID`, `UOA_OWNER_SUB`,
+`UOA_CONFIG_URL`, `UOA_SHARED_SECRET`, `UOA_BASE_URL`, `UOA_REDIRECT_URL` and
+`UOA_MOBILE_REDIRECT_URL`. New integrations need approval in UOA admin.
+The per-domain shared secret authenticates confidential API calls as
+`sha256(domain + client_secret)`; it is not UOA's access-token signing secret.
+The verified domain is the hostname of `UOA_CONFIG_URL`.
 
-- **No OIDC discovery document.** There is no `/.well-known/openid-configuration`.
-- **No JWKS endpoint.** Access tokens are signed with HS256 using the
-  provider's `SHARED_SECRET`, which every trusted client also holds. There
-  are no rotating public keys to fetch.
-- **Client identity = domain + shared secret.** A client is identified by
-  the SHA-256 (or HMAC, exact scheme recorded in UOA docs) of
-  `domain + SHARED_SECRET`. That hash is sent as a `Bearer` token on the
-  server-to-server `/auth/token` call.
-- **Client config is a signed JWT.** The client serves a public URL whose
-  body is a JWT (HS256, `SHARED_SECRET`) describing enabled auth methods,
-  allowed redirect URLs, theme, 2FA, etc. UOA fetches and verifies this JWT
-  on every auth initiation.
-- **Access token is an HS256 JWT**, 15–60 min TTL, paired with a rotating
-  opaque refresh token. User-context API calls to UOA use the header
-  `X-UOA-Access-Token: <access_token>`.
-- Revocation endpoint is `POST /auth/revoke`.
+## Browser and mobile sign-in
 
-## Environment variables (server-side)
+`/auth/login` starts PKCE S256. The HttpOnly, SameSite=Lax verifier cookie binds
+the callback to the initiating browser. A callback clears that cookie even if
+the exchange fails. Confidential `/auth/token?config_url=...` receives
+`{code,redirect_url,code_verifier}` and returns access/refresh tokens and their
+lifetimes. The authenticated server channel establishes trust; Selkie decodes
+the returned access token and checks its subject and expiry. It does not attempt
+to verify UOA's private HS256 deployment key.
 
-```
-UOA_BASE_URL=https://authentication.unlikeotherai.com
-UOA_DOMAIN=<this server's domain>
-UOA_SHARED_SECRET=<set via secret mgr>        # HS256 signing key
-UOA_AUDIENCE=auth.unlikeotherai.com           # JWT aud claim expected by UOA
-UOA_CONFIG_URL=https://<domain>/auth/uoa-config
-UOA_REDIRECT_URL=https://<domain>/auth/callback
-UOA_OWNER_SUB=<the single user's UOA sub>
-```
+Selkie reads the exact subject through `/domain/users?domain=...&user_id=...`.
+Email, name and avatar stay in memory. The stable subject maps to the existing
+product UUID used by device ownership and audit foreign keys. Each sign-in
+stores its own encrypted scoped refresh capability and issues a profile-free
+local JWT containing a server-side session reference. Protected requests inspect
+that session and current UOA authority; rotating refresh credentials are
+serialized through database row locks and saved before profile lookups.
 
-Secrets never live in the repo. For local dev, use `.env` (gitignored).
+The browser callback returns its local handle in the URL fragment, which the
+SPA removes immediately. The mobile callback instead returns a short-lived,
+single-use handoff code. Its atomic exchange yields a mobile-audience handle
+bound to the same server-side session. Expired or consumed handoffs fail closed.
+Local handles without the new session reference require sign-in again.
 
-## Flow
+## Debug logins, logout and the internal broker
 
-### 1. Serve the signed client config
+See [debug-login-sessions.md](debug-login-sessions.md) for the bottom-right debug
+button, 30-minute one-time codes, independent refresh families, confirmed family
+logout, and bounded `session:broker` capability contract. The broker rejects
+caller profile fields and validates live UOA authority before issuing a mobile
+handle. Operator delegation must explicitly approve the exact Selkie API origin.
 
-The server exposes a public endpoint that returns a signed JWT describing
-itself as a UOA client:
+## Product authorization
 
-```
-GET /auth/uoa-config  ->  application/jwt
-```
+The current MVP is a person reaching their own devices. Device routes retain
+stable owner UUID filters. Selkie's `is_super` and operational `status` are
+product administration extensions. Human membership and current organization/
+team references come from UOA; Selkie stores no copied human directory or org
+hierarchy. Historical personal devices receive no fabricated team assignment.
 
-Claims:
+## Transport and outages
 
-```json
-{
-  "aud": "auth.unlikeotherai.com",
-  "domain": "<this server's domain>",
-  "redirect_urls": ["https://<domain>/auth/callback"],
-  "enabled_auth_methods": ["email", "google", "apple"],
-  "user_scope": "global",
-  "ui_theme": {},
-  "language_config": "en"
-}
-```
+Confidential API calls have a ten-second timeout, reject redirects, and bound
+responses to 64 KiB. Error messages never include upstream bodies or tokens.
+Debug relays and broker calls use per-IP rate limits before expensive work.
+A temporary authority/profile outage returns a retryable failure; it cannot
+turn an unconfirmed logout into a cleared local session.
 
-Signed with `UOA_SHARED_SECRET` (HS256).
+## Verification
 
-### 2. User starts auth
-
-The client (browser or mobile app) opens:
-
-```
-https://authentication.unlikeotherai.com/oauth/authorize
-  ?config_url=https%3A%2F%2F<domain>%2Fauth%2Fuoa-config
-```
-
-UOA fetches the config, verifies it, renders the login UI, and on success
-redirects to `UOA_REDIRECT_URL` with a `code` query parameter.
-
-### 3. Code exchange
-
-The server exchanges the code for an access/refresh pair:
-
-```
-POST https://authentication.unlikeotherai.com/auth/token
-Authorization: Bearer <hash(domain + SHARED_SECRET)>
-Content-Type: application/json
-
-{ "code": "<oauth_code>" }
-```
-
-Response:
-
-```json
-{
-  "access_token": "<jwt>",
-  "refresh_token": "<opaque>",
-  "token_type": "Bearer",
-  "expires_in": 1800,
-  "refresh_token_expires_in": 2592000
-}
-```
-
-### 4. Verify the access token
-
-Validate the JWT locally with `golang-jwt/jwt/v5`:
-
-- Algorithm must be `HS256`.
-- Signature verified against `UOA_SHARED_SECRET`.
-- `exp` must be in the future.
-- `aud` (if present) must match expected audience.
-- Extract `sub`, `email`, optional `org` claims.
-
-### 5. Map to internal principal
-
-```
-UOA sub        -> User.external_id
-UOA email      -> User.email
-UOA name       -> User.display_name
-UOA org.roles  -> User.roles  (if present; MVP ignores)
-```
-
-The server then mints its **own** short-lived internal session token (HS256
-JWT, independent secret) for subsequent control-plane calls. External UOA
-tokens are never forwarded to internal modules.
-
-### 6. Single-user authorization gate
-
-MVP policy (hardcoded, later moves to OPA):
-
-```
-allow  iff  token.sub == UOA_OWNER_SUB
-```
-
-Any authenticated UOA user whose `sub` does not match the configured owner
-is rejected at the identity adapter boundary before any resource logic runs.
-
-### 6a. Super user assignment
-
-The **first UOA user to complete a successful login** is automatically promoted
-to super user. The server detects this by checking whether `users` is empty at
-the point the internal session is minted; if so, it sets `is_super = true` on
-the newly created user record and stores that user's `sub` as `UOA_OWNER_SUB`
-(persisted in the database, not the environment, after first-boot).
-
-Super user status grants access to the **Ops** section of the admin UI (Relay,
-System). All other authenticated users see only Devices, Sessions, and Services.
-
-There is no UI to promote or demote super users — the role is set once at
-first login and can only be changed directly in the database.
-
-### 7. Refresh
-
-Refresh tokens are opaque and must be stored server-side (encrypted at rest
-in Postgres, never exposed to the browser). Refresh is performed via the
-same `/auth/token` endpoint with grant type `refresh_token`.
-
-### 8. Logout / revocation
-
-```
-POST https://authentication.unlikeotherai.com/auth/revoke
-Authorization: Bearer <hash(domain + SHARED_SECRET)>
-```
-
-Triggered on explicit logout or on internal session revocation.
-
-## Security notes
-
-- `SHARED_SECRET` is the single most sensitive value in the system: it signs
-  access tokens **and** is the client identity. It must be injected from a
-  secret manager, not committed, not logged, not echoed in errors.
-- The server is both an HMAC signer (for its config JWT) and an HMAC verifier
-  (for access tokens). Because HS256 is symmetric, any attacker with this
-  secret can impersonate the server **and** forge tokens. Treat the secret
-  accordingly.
-- When UOA adds a JWKS/asymmetric signing option in the future, switch.
-- Only trust `email_verified=true` (or equivalent) before mapping an email
-  to the internal `email` field.
-
-## References
-
-- UOA repo: https://github.com/UnlikeOtherAI/UnlikeOtherAuthenticator
-- UOA client integration section in the project README documents the
-  `config_url` / `/auth/token` flow used above.
+`SELKIE_TEST_DATABASE_URL` enables the isolated PostgreSQL session tests in
+`internal/auth/uoa_sessions_integration_test.go`. They verify independent
+families, replay refusal, saved rotation before profile failures and retained
+logout retry state. The headless `e2e` suite verifies actual local server login,
+profile-free handles, device pages, and rendered debug controls using explicit
+HTTP fixtures for the debug UI. Live provider and physical-device proof remain
+separate deployment acceptance steps.
