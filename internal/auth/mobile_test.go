@@ -59,15 +59,15 @@ func TestServeCallbackRequiresPKCEVerifier(t *testing.T) {
 func TestMintTokenRequiresAudience(t *testing.T) {
 	h := &CallbackHandler{cfg: config.Config{InternalSessionSecret: "secret"}}
 
-	if _, err := h.mintToken("u", false, "", "", "", nil); err == nil {
+	if _, err := h.mintSessionToken("u", false, "fixture-session", nil); err == nil {
 		t.Fatal("expected error for missing audience")
 	}
 
-	signed, err := h.mintToken("u-1", false, "", "", "", []string{AudienceAdmin})
+	signed, err := h.mintSessionToken("u-1", false, "fixture-session", []string{AudienceAdmin})
 	if err != nil {
 		t.Fatalf("mint token: %v", err)
 	}
-	parsed := jwtClaims{}
+	parsed := sessionClaims{}
 	_, err = jwt.ParseWithClaims(signed, &parsed, func(_ *jwt.Token) (any, error) {
 		return []byte("secret"), nil
 	},

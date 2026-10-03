@@ -1,8 +1,6 @@
-import { useRef, useState } from "react";
-import { getToken, isTokenValid, setToken } from "../lib/auth";
+import { useEffect, useRef, useState } from "react";
+import { getToken, setToken } from "../lib/auth";
 
-// Snapshots only transport an existing credential. The API remains the authority
-// for its signature, audience and expiry; importing never creates a session.
 export function DebugSessionButton({ mode }: { mode: "export" | "import" }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const attempt = useRef(0);
@@ -21,12 +19,32 @@ export function DebugSessionButton({ mode }: { mode: "export" | "import" }) {
 
   function open() {
     clear();
-    if (mode === "export") {
-      const token = getToken();
-      if (token) setSnapshot(JSON.stringify({ version: 1, product: "selkie", token }, null, 2));
-      else setError("No active session. Sign in again.");
-    }
     dialog.current?.showModal();
+  }
+
+  const sessionKey = getToken();
+  useEffect(() => {
+    attempt.current++;
+    setSnapshot(""); setBusy(false); setError(""); setCopied(false);
+  }, [sessionKey]);
+
+  async function issue() {
+    const currentAttempt = ++attempt.current;
+    setBusy(true); setError(""); setCopied(false);
+    try {
+      const previous = snapshot ? parseLoginCode(snapshot) : undefined;
+      const response = await fetch("/auth/debug-login/issue", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionKey}` },
+        body: JSON.stringify(previous ? { previous_token: previous } : {}), cache: "no-store", redirect: "error",
+      });
+      if (!response.ok) throw new Error("Could not create a login code. Try again.");
+      const data: { url: string; token: string } = await response.json();
+      parseLoginCode(JSON.stringify(data));
+      if (attempt.current !== currentAttempt || !dialog.current?.open || getToken() !== sessionKey) return;
+      setSnapshot(JSON.stringify(data, null, 2));
+    } catch (cause) {
+      if (attempt.current === currentAttempt) setError(cause instanceof Error ? cause.message : "Could not create a code.");
+    } finally { if (attempt.current === currentAttempt) setBusy(false); }
   }
 
   async function copy() {
@@ -34,33 +52,27 @@ export function DebugSessionButton({ mode }: { mode: "export" | "import" }) {
       await navigator.clipboard.writeText(snapshot);
       setCopied(true);
     } catch {
-      setError("Could not copy. Select the snapshot and copy it manually.");
+      setError("Could not copy. Select the JSON and copy it manually.");
     }
   }
 
   async function importSession(event: React.FormEvent) {
     event.preventDefault();
     const currentAttempt = ++attempt.current;
+    const initialToken = getToken();
     setBusy(true);
     setError("");
     try {
-      const data: unknown = JSON.parse(snapshot);
-      if (!data || typeof data !== "object" || !("product" in data) || data.product !== "selkie" ||
-        !("version" in data) || data.version !== 1 || !("token" in data) ||
-        typeof data.token !== "string" || !isTokenValid(data.token)) {
-        throw new Error("Paste a valid, unexpired Selkie session snapshot.");
-      }
-      const response = await fetch("/api/v1/system/info", {
-        headers: { Authorization: `Bearer ${data.token}` },
-        cache: "no-store",
-        redirect: "error",
+      const token = parseLoginCode(snapshot);
+      const response = await fetch("/auth/debug-login/redeem", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }), cache: "no-store", redirect: "error",
       });
-      if (!response.ok) {
-        throw new Error(response.status === 401 || response.status === 403
-          ? "This session is expired or cannot access Selkie admin. Sign in again."
-          : "Could not validate the session. Try again.");
-      }
-      if (attempt.current !== currentAttempt || !dialog.current?.open) return;
+      if (!response.ok) throw new Error(response.status === 401
+        ? "This login code has expired or already been used."
+        : "Could not create a session. Try again.");
+      const data: { token: string } = await response.json();
+      if (attempt.current !== currentAttempt || !dialog.current?.open || getToken() !== initialToken) return;
       setToken(data.token);
       clear();
       dialog.current.close();
@@ -69,7 +81,7 @@ export function DebugSessionButton({ mode }: { mode: "export" | "import" }) {
       if (attempt.current !== currentAttempt) return;
       setSnapshot("");
       setError(cause instanceof SyntaxError
-        ? "Paste the session snapshot JSON copied from Selkie admin."
+        ? "Paste the login code or JSON copied from Selkie admin."
         : cause instanceof Error ? cause.message : "Could not import the session.");
     } finally {
       if (attempt.current === currentAttempt) setBusy(false);
@@ -77,7 +89,7 @@ export function DebugSessionButton({ mode }: { mode: "export" | "import" }) {
   }
 
   return <>
-    <button onClick={open} aria-label="Debug session snapshot" title="Debug session snapshot"
+    <button onClick={open} aria-label="Debug login" title="Debug login"
       className="fixed bottom-5 right-5 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-slate-600 bg-slate-800 text-slate-300 shadow-lg hover:bg-slate-700">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="m8 2 2 3m6-3-2 3M9 9h6m-3 0v11M4 13H2m20 0h-2M5 7 3 5m16 2 2-2M5 19l-2 2m16-2 2 2" />
@@ -88,24 +100,38 @@ export function DebugSessionButton({ mode }: { mode: "export" | "import" }) {
       className="w-[calc(100%_-_2rem)] max-w-lg rounded-xl border border-slate-700 bg-slate-900 p-6 text-slate-100 shadow-2xl backdrop:bg-black/70">
       <form onSubmit={importSession} className="space-y-4">
         <div className="flex items-center justify-between gap-3">
-          <h2 id="debug-session-title" className="text-lg font-semibold">{mode === "export" ? "Session debug snapshot" : "Log in with session"}</h2>
+          <h2 id="debug-session-title" className="text-lg font-semibold">{mode === "export" ? "One-time login code" : "Log in with code"}</h2>
           <button type="button" aria-label="Close session dialog" onClick={() => dialog.current?.close()} className="px-2 text-slate-400 hover:text-white">✕</button>
         </div>
         <p className="text-sm text-slate-400">{mode === "export"
-          ? "Copy this session snapshot to continue the same session on another machine. Treat it as a secret."
-          : "Paste a session snapshot copied from Selkie admin to continue that session here."}</p>
-        <label htmlFor="session-snapshot" className="block text-sm">Session snapshot</label>
+          ? "Create a code for a separate session. It works once for 30 minutes. Renew replaces the previous code."
+          : "Paste a code or JSON copied from Selkie admin to create a separate session."}</p>
+        <label htmlFor="session-snapshot" className="block text-sm">Login code or JSON</label>
         <textarea id="session-snapshot" autoFocus value={snapshot} readOnly={mode === "export"} onChange={(event) => setSnapshot(event.target.value)}
-          spellCheck={false} autoComplete="off" placeholder="Paste session snapshot JSON" rows={8}
+          spellCheck={false} autoComplete="off" placeholder="Paste login code or JSON" rows={8}
           className="w-full rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
         {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
         <div className="flex justify-end gap-3">
           <button type="button" onClick={() => dialog.current?.close()} className="rounded-lg px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Cancel</button>
           {mode === "export"
-            ? <button type="button" onClick={() => void copy()} disabled={!snapshot} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm disabled:opacity-50">{copied ? "Copied" : "Copy JSON"}</button>
-            : <button type="submit" disabled={busy || !snapshot.trim()} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm disabled:opacity-50">{busy ? "Checking session…" : "Log in with session"}</button>}
+            ? <><button type="button" onClick={() => void issue()} disabled={busy} className="rounded-lg px-4 py-2 text-sm disabled:opacity-50">{busy ? "Creating…" : snapshot ? "Renew" : "Create code"}</button><button type="button" onClick={() => void copy()} disabled={!snapshot || busy} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm disabled:opacity-50">{copied ? "Copied" : "Copy JSON"}</button></>
+            : <button type="submit" disabled={busy || !snapshot.trim()} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm disabled:opacity-50">{busy ? "Creating session…" : "Log in with code"}</button>}
         </div>
       </form>
     </dialog>
   </>;
+}
+
+export function parseLoginCode(input: string): string {
+  if (input.length > 2048) throw new Error("Paste a valid login code or JSON.");
+  const value = input.trim();
+  if (/^[A-Za-z0-9_-]{43}$/.test(value)) return value;
+  const data: unknown = JSON.parse(value);
+  if (!data || typeof data !== "object" || Array.isArray(data) || Object.keys(data).sort().join(",") !== "token,url" ||
+    !("token" in data) || typeof data.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(data.token) ||
+    !("url" in data) || typeof data.url !== "string") throw new Error("Paste a valid login code or JSON.");
+  const url = new URL(data.url);
+  if (url.origin !== window.location.origin || url.username || url.password || url.search || url.hash || url.pathname !== "/")
+    throw new Error("This code belongs to another Selkie site.");
+  return data.token;
 }

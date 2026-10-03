@@ -1,15 +1,11 @@
 package auth
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -21,14 +17,28 @@ import (
 
 // UOAClaims represents the identity claims returned from the UOA token exchange.
 type UOAClaims struct {
-	Email       string `json:"email,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	Name        string `json:"name,omitempty"`
+	CapabilityFingerprint string `json:"-"`
+	Picture               string `json:"picture,omitempty"`
+	Active                *struct {
+		OrgID  string `json:"orgId"`  //nolint:tagliatelle // Exact UOA contract.
+		TeamID string `json:"teamId"` //nolint:tagliatelle // Exact UOA contract.
+	} `json:"active,omitempty"`
+	SessionID        string `json:"-"`
+	RefreshToken     string `json:"-"`
+	RefreshExpiresIn int64  `json:"-"`
+	ActiveOrgID      string `json:"-"`
+	ActiveTeamID     string `json:"-"`
+	Email            string `json:"email,omitempty"`
+	DisplayName      string `json:"display_name,omitempty"`
+	Name             string `json:"name,omitempty"`
 	jwt.RegisteredClaims
 }
 
 type tokenExchangeResponse struct {
-	AccessToken string `json:"access_token"`
+	AccessToken           string `json:"access_token"`
+	RefreshToken          string `json:"refresh_token"`
+	ExpiresIn             int64  `json:"expires_in"`
+	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"`
 }
 
 // BuildAuthURL constructs the UOA auth URL (browser flow) from the current
@@ -78,20 +88,6 @@ func uoaConfigDomain(cfg config.Config) (string, error) {
 	return domain, nil
 }
 
-func uoaTokenEndpoint(cfg config.Config) (string, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.UOABaseURL), "/")
-	if baseURL == "" {
-		return "", errors.New("UOA_BASE_URL is required")
-	}
-	configURL := strings.TrimSpace(cfg.UOAConfigURL)
-	if configURL == "" {
-		return "", errors.New("UOA_CONFIG_URL is required")
-	}
-	query := url.Values{}
-	query.Set("config_url", configURL)
-	return baseURL + "/auth/token?" + query.Encode(), nil
-}
-
 // ExchangeCode exchanges an authorization code for UOA identity claims. Per
 // the UOA contract the request must carry the same redirect_url used in the
 // authorize step and the PKCE code_verifier, authenticated with the per-domain
@@ -102,68 +98,27 @@ func ExchangeCode(ctx context.Context, code, redirectURL, codeVerifier string) (
 		return nil, errors.New("code is required")
 	}
 
-	payload, err := json.Marshal(map[string]string{
-		"code":          code,
-		"redirect_url":  redirectURL,
-		"code_verifier": codeVerifier,
+	tokenResponse, err := exchangeUOATokens(ctx, cfg, map[string]string{
+		"code": code, "redirect_url": redirectURL, "code_verifier": codeVerifier,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal code exchange payload: %w", err)
-	}
-
-	domain, err := uoaConfigDomain(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("resolve UOA domain: %w", err)
-	}
-	endpoint, err := uoaTokenEndpoint(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("build UOA token endpoint: %w", err)
-	}
-
-	authorization := uoaAuthorizationToken(domain, cfg.UOASharedSecret)
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("build token exchange request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+authorization)
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("exchange code at %s: %w", endpoint, err)
-	}
-	defer response.Body.Close()
-
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read token exchange response from %s: %w", endpoint, err)
-	}
-	if response.StatusCode >= http.StatusMultipleChoices {
-		message := strings.TrimSpace(string(body))
-		if message == "" {
-			message = http.StatusText(response.StatusCode)
-		}
-		return nil, fmt.Errorf("token exchange failed at %s: status %d: %s", endpoint, response.StatusCode, message)
-	}
-
-	var tokenResponse tokenExchangeResponse
-	if unmarshalErr := json.Unmarshal(body, &tokenResponse); unmarshalErr != nil {
-		return nil, fmt.Errorf("decode token exchange response from %s: %w", endpoint, unmarshalErr)
-	}
-	if tokenResponse.AccessToken == "" {
-		return nil, fmt.Errorf("token exchange at %s returned no access token", endpoint)
+		return nil, err
 	}
 
 	claims, err := decodeUOAToken(tokenResponse.AccessToken)
 	if err != nil {
-		return nil, fmt.Errorf("decode access token from %s: %w", endpoint, err)
+		return nil, fmt.Errorf("decode access token: %w", err)
 	}
+	claims.RefreshToken = tokenResponse.RefreshToken
+	claims.RefreshExpiresIn = tokenResponse.RefreshTokenExpiresIn
 	if claims.DisplayName == "" {
 		claims.DisplayName = claims.Name
 	}
 
+	if claims.Active != nil {
+		claims.ActiveOrgID = claims.Active.OrgID
+		claims.ActiveTeamID = claims.Active.TeamID
+	}
 	return claims, nil
 }
 
@@ -182,8 +137,12 @@ func decodeUOAToken(tokenString string) (*UOAClaims, error) {
 	if strings.TrimSpace(claims.Subject) == "" {
 		return nil, errors.New("access token has no subject claim")
 	}
-	if exp, err := claims.GetExpirationTime(); err == nil && exp != nil && exp.Before(time.Now()) {
+	if exp, err := claims.GetExpirationTime(); err != nil || exp == nil || !exp.After(time.Now()) {
 		return nil, errors.New("access token is expired")
+	}
+	if claims.Active != nil {
+		claims.ActiveOrgID = claims.Active.OrgID
+		claims.ActiveTeamID = claims.Active.TeamID
 	}
 	return claims, nil
 }

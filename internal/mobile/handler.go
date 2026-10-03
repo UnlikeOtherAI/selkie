@@ -53,6 +53,7 @@ const (
 )
 
 type Handler struct {
+	validator    auth.SessionValidator
 	db           *store.DB
 	logger       *zap.Logger
 	cfg          config.Config
@@ -87,11 +88,15 @@ type mobileServer struct {
 	OSArch     string  `json:"os_arch"`
 }
 
-func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator, auditor *audit.Logger, hub HubSyncer, limiter ratelimit.Limiter) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator, auditor *audit.Logger, hub HubSyncer, limiter ratelimit.Limiter, validators ...auth.SessionValidator) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	h := &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, hub: hub, limiter: limiter, mwAudit: auditor}
+	validator := auth.SessionValidator(auth.NewSessionManager(db, cfg))
+	if len(validators) > 0 {
+		validator = validators[0]
+	}
+	h := &Handler{validator: validator, db: db, logger: logger, cfg: cfg, overlay: alloc, hub: hub, limiter: limiter, mwAudit: auditor}
 	// Preserve nil-ability: a nil *audit.Logger assigned directly to the
 	// auditLogger interface would produce a non-nil interface holding a nil
 	// pointer, defeating the h.audit == nil guard in auditMobileDisconnect.
@@ -104,7 +109,7 @@ func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.All
 
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg, h.mwAudit, h.limiter))
+		r.Use(auth.Middleware(h.cfg, h.mwAudit, h.limiter, h.validator))
 		r.Use(auth.RequireAudience(auth.AudienceMobile))
 		r.Post("/api/v1/mobile/enroll", h.handleEnroll)
 		r.Get("/api/v1/mobile/servers", h.handleListServers)

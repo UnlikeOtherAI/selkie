@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -28,22 +29,20 @@ const (
 // the Ledger ProxyToken provisioning pattern), rather than selkie's snake_case
 // browser/mobile JSON.
 type internalMintSessionRequest struct {
-	UOASub      string `json:"uoaSub"` //nolint:tagliatelle // Coder service contract uses camelCase.
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"` //nolint:tagliatelle // Coder service contract uses camelCase.
+	UOASub     string `json:"uoaSub"` //nolint:tagliatelle // Coder service contract uses camelCase.
+	Capability string `json:"capability"`
 }
 
 // ServeInternalMintSession is the service-to-service session broker. A trusted
-// host-local caller (the Coder API) presents a shared service key and a UOA
-// sub; selkie upserts the matching user via the EXACT path a normal login uses
-// and returns a freshly minted mobile-audience session JWT the caller can hand
-// to the app for POST /api/v1/mobile/enroll.
+// host-local caller presents a service key and a UOA-issued exact-audience
+// session:broker capability. UOA validates its live subject authority. Selkie
+// returns a mobile handle whose lifetime cannot exceed the capability expiry.
 //
 // Response codes:
 //   - 503 when SELKIE_INTERNAL_SERVICE_KEY is unset (feature disabled)
 //   - 401 when the Authorization bearer key is missing or wrong
-//   - 400 on a malformed body or missing uoaSub/email
-//   - 200 with {"token": ..., "expires_at": <RFC3339>} on success
+//   - 400 on a malformed body or missing uoaSub/capability
+//   - 200 with {fieldToken: ..., fieldExpiresAt: <RFC3339>} on success
 func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *http.Request) {
 	serviceKey := strings.TrimSpace(h.cfg.InternalServiceKey)
 	if serviceKey == "" {
@@ -60,43 +59,50 @@ func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *htt
 	defer cancel()
 
 	sourceIP := audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)
-	if !h.allowRateLimit(ctx, w, ratelimit.Key("internal", "mint-session", "ip", audit.RateLimitIP(sourceIP)), internalMintSessionLimit, internalMintSessionWindow) {
+	if !h.allowRateLimit(ctx, w, ratelimit.Key("internal", "mint-session", "ip", audit.RateLimitIP(sourceIP)), internalMintSessionLimit) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	var req internalMintSessionRequest
 	if err := decodeSingleJSONObject(r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	uoaSub := strings.TrimSpace(req.UOASub)
-	email := strings.TrimSpace(req.Email)
-	if uoaSub == "" {
-		writeJSONError(w, http.StatusBadRequest, "uoaSub is required")
+	if uoaSub == "" || strings.TrimSpace(req.Capability) == "" {
+		writeJSONError(w, http.StatusBadRequest, "uoaSub and capability are required")
 		return
 	}
-	if email == "" {
-		writeJSONError(w, http.StatusBadRequest, "email is required")
-		return
-	}
-
-	claims := &UOAClaims{Email: email, DisplayName: strings.TrimSpace(req.DisplayName)}
-	claims.Subject = uoaSub
-
-	userID, isSuper, err := h.upsertUserFn(ctx, claims)
+	validation, err := validateBrokerCapability(ctx, h.cfg, req.Capability)
 	if err != nil {
-		if h.logger != nil {
-			h.logger.Error("internal mint-session upsert", zap.Error(err))
+		if errors.Is(err, errUOARefused) {
+			writeUnauthorized(w)
+		} else {
+			writeJSONError(w, http.StatusServiceUnavailable, "broker authority temporarily unavailable")
 		}
-		writeJSONError(w, http.StatusInternalServerError, "failed to provision user")
 		return
 	}
-
-	displayName := claims.DisplayName
-	if displayName == "" {
-		displayName = email
+	if validation.Sub != uoaSub {
+		writeUnauthorized(w)
+		return
 	}
-	token, err := h.mintToken(userID, isSuper, email, displayName, "", []string{AudienceMobile})
+	profile, err := currentUOAProfile(ctx, h.cfg, validation.Sub)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "profile temporarily unavailable")
+		return
+	}
+	userID, isSuper, err := h.upsertUserFn(ctx, profile)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "failed to provision user")
+		return
+	}
+	sessionID, err := h.createBrokerFn(ctx, userID, req.Capability, validation)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "failed to create broker session")
+		return
+	}
+	token, err := h.mintSessionTokenUntil(userID, isSuper, sessionID, []string{AudienceMobile}, validation.ExpiresAt)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to mint session token")
 		return
@@ -105,8 +111,8 @@ func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *htt
 	h.auditInternalMintSession(ctx, r, userID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token":      token,
-		"expires_at": time.Now().UTC().Add(sessionTokenTTL).Format(time.RFC3339),
+		fieldToken:     token,
+		fieldExpiresAt: validation.ExpiresAt.UTC().Format(time.RFC3339),
 	})
 }
 

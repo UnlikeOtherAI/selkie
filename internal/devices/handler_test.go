@@ -41,6 +41,7 @@ func TestHandleHeartbeatRateLimited(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/devices/device-1/heartbeat", strings.NewReader(`{"external_endpoint_host":"198.51.100.7","external_endpoint_port":51820,"agent_version":"0.1.0","disk_free_bytes":1}`))
@@ -65,6 +66,7 @@ func TestHandlePairStartRateLimited(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/pair/start", strings.NewReader(`{"wg_public_key":"pub","hostname":"mbp","os_platform":"darwin","os_arch":"arm64","agent_version":"0.1.0"}`))
@@ -89,6 +91,7 @@ func TestHandlePairClaimLockedOut(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/pair/claim", strings.NewReader(`{"code":"ABC123"}`))

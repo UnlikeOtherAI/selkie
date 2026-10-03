@@ -66,7 +66,7 @@ func setupRouterWithLimiter(t *testing.T, limiter ratelimit.Limiter) chi.Router 
 	// DB with nil Pool — tests that return before DB access work fine;
 	// tests that would hit the DB are not included here.
 	db := &store.DB{}
-	h := sessions.New(db, nil, nil, cfg, nil, limiter, nil)
+	h := sessions.New(db, nil, nil, cfg, nil, limiter, nil, fixtureSessionValidator())
 
 	r := chi.NewRouter()
 	h.Mount(r)
@@ -262,7 +262,7 @@ func TestRelay_NoCoturnSecret(t *testing.T) {
 	// CoturnSecret is empty → 503 "relay not configured".
 	cfg := config.Config{InternalSessionSecret: testSecret, CoturnSecret: ""}
 	db := &store.DB{}
-	h := sessions.New(db, nil, nil, cfg, nil, fakeLimiter{decision: ratelimit.Decision{Allowed: true}}, nil)
+	h := sessions.New(db, nil, nil, cfg, nil, fakeLimiter{decision: ratelimit.Decision{Allowed: true}}, nil, fixtureSessionValidator())
 
 	r := chi.NewRouter()
 	h.Mount(r)
