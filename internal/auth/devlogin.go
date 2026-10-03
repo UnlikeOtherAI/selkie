@@ -49,8 +49,8 @@ func (h *CallbackHandler) ServeDevLogin(w http.ResponseWriter, r *http.Request) 
 		if auditErr := h.audit.Log(r.Context(), audit.Event{
 			ActorUserID: &userID,
 			Action:      "user.login",
-			Outcome:     "success",
-			TargetTable: "users",
+			Outcome:     auditOutcomeSuccess,
+			TargetTable: auditTargetUsers,
 			TargetID:    &userID,
 			RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 			UserAgent:   audit.TruncateUserAgent(r.UserAgent()),

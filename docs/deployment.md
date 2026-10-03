@@ -108,7 +108,7 @@ All commands run as `root` on the host.
 
    ```sh
    cd /srv/selkie
-   docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml up -d --build
+   ./ops/compose-prod.sh up -d --build
    ```
 
    The `--env-file .env` flag is **required**: compose otherwise interpolates
@@ -129,8 +129,8 @@ server deploys on unrelated failures. The safety net is the build itself —
 build, so a commit that fails to compile leaves the running server untouched.
 
 The deploy job: rsyncs the repo to `/srv/selkie` (preserving `.env`), runs
-`docker compose ... up -d --build`, prunes dangling images, then polls
-`https://api.selkie.live/healthz` and fails the run if it never goes green.
+`docker compose ... up -d --build`, then polls
+`https://api.selkie.live/readyz` and fails the run if it never goes green.
 
 Required GitHub repo secrets:
 
@@ -142,13 +142,18 @@ Required GitHub repo secrets:
 Rotate the deploy key by regenerating the pair, replacing the `authorized_keys`
 entry on the host, and updating `SELKIE_DEPLOY_SSH_KEY`.
 
+The wrapper discovers the Compose project from the existing Selkie containers.
+The current installation uses `ops`, including the persistent `ops_redis_data`
+volume. Fresh installations use `selkie`. Conflicting ownership labels stop the
+deploy before any containers are changed.
+
 ## Day-2 operations
 
-Canonical compose invocation (always pass project name + env-file):
+Canonical compose invocation (the wrapper supplies the existing project name and env-file):
 
 ```sh
 cd /srv/selkie
-docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml <cmd>
+./ops/compose-prod.sh <cmd>
 ```
 
 - redeploy after a source change: `... up -d --build`
@@ -184,19 +189,19 @@ TRUSTED_PROXY_CIDRS=172.18.0.0/16,127.0.0.1/32
 
 ## SSO status
 
-SSO is delegated to `authentication.unlikeotherai.com` and the live UOA
-contract is **implemented** (RS256 config JWT + `/.well-known/jwks.json` + PKCE
-+ decode-not-verify). Hitting login registers `api.selkie.live` as a PENDING
-integration. To finish go-live (one-time, human):
+SSO is delegated to `authentication.unlikeotherai.com`. Production browser login
+was verified on 2026-10-03: the UOA callback returned to
+`https://admin.selkie.live/auth/callback`, the admin overview loaded, and the
+server recorded successful login events. The earlier pending-integration note
+is no longer current. The client secret and RSA config signing key are set.
 
-1. A UOA superuser approves `api.selkie.live` in `/admin`.
-2. `UOA_CONTACT_EMAIL` receives a one-time link; claim the per-domain
-   `client_secret`.
-3. Set `UOA_SHARED_SECRET=<client_secret>` in `/srv/selkie/.env` and
-   `docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml restart server`.
+For a new installation, approve its domain in UOA and configure the issued
+client secret as described in [sso.md](sso.md). After changing `.env`, recreate
+the server with `./ops/compose-prod.sh up -d server`; a plain container restart
+does not reload environment variables.
 
-The RSA signing key lives in `UOA_CONFIG_SIGNING_KEY` (base64 PEM). See
-[sso.md](sso.md).
+See [first-use-readiness.md](first-use-readiness.md) for the remaining identity
+and device acceptance requirements.
 
 ## DNS shape
 

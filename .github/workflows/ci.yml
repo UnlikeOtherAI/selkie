@@ -35,6 +35,9 @@ jobs:
           version: v2.12.2
           args: --timeout=5m
 
+      - name: production compose ownership tests
+        run: ./ops/compose-prod.test.sh
+
       - name: caddyfile header smoke test
         run: |
           set -euo pipefail

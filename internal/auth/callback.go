@@ -25,6 +25,8 @@ import (
 )
 
 const (
+	auditOutcomeSuccess         = "success"
+	auditTargetUsers            = "users"
 	mobileHandoffTTL            = 60 * time.Second
 	mobileHandoffExchangeLimit  = 10
 	mobileHandoffExchangeWindow = time.Minute
@@ -374,8 +376,8 @@ func (h *CallbackHandler) auditLogin(ctx context.Context, r *http.Request, userI
 	if auditErr := h.audit.Log(ctx, audit.Event{
 		ActorUserID: &userID,
 		Action:      "user.login",
-		Outcome:     "success",
-		TargetTable: "users",
+		Outcome:     auditOutcomeSuccess,
+		TargetTable: auditTargetUsers,
 		TargetID:    &userID,
 		RemoteIP:    audit.ClientIP(r, h.cfg.TrustedProxyCIDRs),
 		UserAgent:   audit.TruncateUserAgent(r.UserAgent()),

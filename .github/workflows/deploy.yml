@@ -6,7 +6,7 @@ name: deploy
 # server deploy, so gating would block deploys on unrelated failures. Safety
 # net: `docker compose up -d --build` only swaps containers after a successful
 # image build, so a commit that fails to compile leaves the running server
-# untouched; the final healthz check then fails the run loudly.
+# untouched; the final readiness check then fails the run loudly.
 on:
   push:
     branches: [main]
@@ -56,13 +56,13 @@ jobs:
           ssh -i "$HOME/.ssh/id_deploy" -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes \
             "$DEPLOY_HOST" \
-            "cd $DEPLOY_PATH && docker compose -p selkie --env-file .env -f ops/docker-compose.prod.yml up -d --build && docker image prune -f"
+            "cd $DEPLOY_PATH && ./ops/compose-prod.sh up -d --build"
 
       - name: health check
         run: |
           for i in $(seq 1 30); do
-            if curl -fsS --max-time 5 https://api.selkie.live/healthz >/dev/null; then
-              echo "healthz OK after $((i * 4))s"; exit 0
+            if curl -fsS --max-time 5 https://api.selkie.live/readyz >/dev/null; then
+              echo "readyz OK after $((i * 4))s"; exit 0
             fi
             sleep 4
           done

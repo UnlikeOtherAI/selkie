@@ -46,26 +46,26 @@ const MinSessionSecretLen = 32
 
 // Config holds all runtime configuration values loaded from the environment.
 type Config struct {
-	UOABaseURL               string
-	UOADomain                string
-	UOASharedSecret          string
-	UOAAudience              string
-	UOAConfigURL             string
-	UOARedirectURL           string
-	UOAMobileRedirectURL     string
-	UOAOwnerSub              string
-	UOAConfigSigningKeyPEM   string
-	UOAConfigSigningKID      string
-	UOAContactEmail          string
-	MobileRedirectURL        string
-	DatabaseURL              string
-	RedisURL                 string
-	InternalSessionSecret    string
+	UOABaseURL             string
+	UOADomain              string
+	UOASharedSecret        string
+	UOAAudience            string
+	UOAConfigURL           string
+	UOARedirectURL         string
+	UOAMobileRedirectURL   string
+	UOAOwnerSub            string
+	UOAConfigSigningKeyPEM string
+	UOAConfigSigningKID    string
+	UOAContactEmail        string
+	MobileRedirectURL      string
+	DatabaseURL            string
+	RedisURL               string
+	InternalSessionSecret  string
 	// InternalServiceKey authenticates trusted host-local service-to-service
 	// callers (the Coder API) on POST /api/v1/internal/mint-session. When empty
 	// the endpoint is disabled and returns 503. Loaded from
 	// SELKIE_INTERNAL_SERVICE_KEY.
-	InternalServiceKey string
+	InternalServiceKey       string
 	TurnHost                 string
 	TurnPort                 int
 	CoturnSecret             string
