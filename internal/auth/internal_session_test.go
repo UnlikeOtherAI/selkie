@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -46,10 +47,25 @@ func (f *fakeUpserter) upsert(_ context.Context, claims *UOAClaims) (string, boo
 
 func newMintSessionHandler(t *testing.T, key string, upserter *fakeUpserter) *CallbackHandler {
 	t.Helper()
-	cfg := config.Config{InternalSessionSecret: "test-secret", InternalServiceKey: key}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/session-broker/validate" {
+			var body struct {
+				Token string `json:"token"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": body.Token, "expires_at": time.Now().Add(5 * time.Minute).Format(time.RFC3339), "active": map[string]string{"orgId": "org-fixture", "teamId": "team-fixture"}})
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"users": []map[string]string{{"id": r.URL.Query().Get("user_id"), "email": "authoritative@example.com", "name": "Authoritative"}}})
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := config.Config{InternalSessionSecret: "test-secret", InternalServiceKey: key, UOABaseURL: upstream.URL, UOAConfigURL: upstream.URL + "/config"}
 	h := NewCallbackHandler(nil, cfg, nil, zap.NewNop(), fakeLimiter{decision: ratelimit.Decision{Allowed: true}})
 	if upserter != nil {
 		h.upsertUserFn = upserter.upsert
+	}
+	h.createBrokerFn = func(context.Context, string, string, brokerValidation) (string, error) {
+		return "fixture-broker-session", nil
 	}
 	return h
 }
@@ -114,7 +130,7 @@ func TestInternalMintSession_MintsMobileTokenThatPassesMiddleware(t *testing.T) 
 	upserter := newFakeUpserter()
 	h := newMintSessionHandler(t, testServiceKey, upserter)
 
-	rec := postMintSession(t, h, "Bearer "+testServiceKey, `{"uoaSub":"sub-abc","email":"a@example.com","displayName":"Ada"}`)
+	rec := postMintSession(t, h, "Bearer "+testServiceKey, `{"uoaSub":"sub-abc","capability":"sub-abc"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -135,7 +151,7 @@ func TestInternalMintSession_MintsMobileTokenThatPassesMiddleware(t *testing.T) 
 	// The minted token must pass selkie's own auth stack for a mobile route.
 	protected := chi.NewRouter()
 	protected.Group(func(r chi.Router) {
-		r.Use(Middleware(h.cfg, nil, nil))
+		r.Use(Middleware(h.cfg, nil, nil, SessionValidatorFunc(func(_ context.Context, claims Claims) (Claims, error) { return claims, nil })))
 		r.Use(RequireAudience(AudienceMobile))
 		r.Get("/api/v1/mobile/ping", func(w http.ResponseWriter, req *http.Request) {
 			claims, _ := ClaimsFromContext(req.Context())
@@ -162,7 +178,7 @@ func TestInternalMintSession_UpsertIdempotentBySub(t *testing.T) {
 	upserter := newFakeUpserter()
 	h := newMintSessionHandler(t, testServiceKey, upserter)
 
-	body := `{"uoaSub":"sub-dup","email":"dup@example.com"}`
+	body := `{"uoaSub":"sub-dup","capability":"sub-dup"}`
 	rec1 := postMintSession(t, h, "Bearer "+testServiceKey, body)
 	rec2 := postMintSession(t, h, "Bearer "+testServiceKey, body)
 	if rec1.Code != http.StatusOK || rec2.Code != http.StatusOK {

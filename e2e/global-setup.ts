@@ -56,7 +56,7 @@ async function globalSetup(config: FullConfig) {
       env: {
         ...process.env,
         DATABASE_URL: dbUrl,
-        REDIS_URL: process.env.E2E_REDIS_URL || "redis://localhost:6379",
+        REDIS_URL: process.env.E2E_REDIS_URL ?? "redis://localhost:6379",
         DEV_MODE: "true",
         CONFIRM_DEV_MODE: "true",
         SERVER_PORT: String(port),

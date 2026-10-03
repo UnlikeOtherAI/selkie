@@ -32,28 +32,33 @@ const (
 
 // Handler serves session-related HTTP endpoints.
 type Handler struct {
-	rdb     *store.Redis
-	db      *store.DB
-	logger  *zap.Logger
-	cfg     config.Config
-	policy  *policy.Engine
-	limiter ratelimit.Limiter
-	audit   *audit.Logger
+	validator auth.SessionValidator
+	rdb       *store.Redis
+	db        *store.DB
+	logger    *zap.Logger
+	cfg       config.Config
+	policy    *policy.Engine
+	limiter   ratelimit.Limiter
+	audit     *audit.Logger
 }
 
 // New creates a sessions Handler with the given dependencies.
-func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config, pe *policy.Engine, limiter ratelimit.Limiter, auditor *audit.Logger) *Handler {
+func New(db *store.DB, rdb *store.Redis, logger *zap.Logger, cfg config.Config, pe *policy.Engine, limiter ratelimit.Limiter, auditor *audit.Logger, validators ...auth.SessionValidator) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	return &Handler{db: db, rdb: rdb, logger: logger, cfg: cfg, policy: pe, limiter: limiter, audit: auditor}
+	validator := auth.SessionValidator(auth.NewSessionManager(db, cfg))
+	if len(validators) > 0 {
+		validator = validators[0]
+	}
+	return &Handler{validator: validator, db: db, rdb: rdb, logger: logger, cfg: cfg, policy: pe, limiter: limiter, audit: auditor}
 }
 
 // Mount registers session routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter))
+		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter, h.validator))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/sessions", h.handleCreateSession)
 		r.Post("/api/v1/sessions/{id}/candidates", h.handleSessionCandidates)

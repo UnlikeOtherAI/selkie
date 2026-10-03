@@ -251,12 +251,15 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 
 	auditor := audit.New(db, logger)
 
-	auth.NewCallbackHandler(db, cfg, auditor, logger, limiter).Mount(r)
-	admin.New(db, logger, cfg, auditor, limiter).Mount(r)
-	devices.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
-	mobile.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
-	services.New(db, logger, cfg, auditor, limiter).Mount(r)
-	sessions.New(db, rdb, logger, cfg, policyEngine, limiter, auditor).Mount(r)
+	sessionManager := auth.NewSessionManager(db, cfg)
+	stopSessionMaintenance := sessionManager.StartMaintenance(ctx)
+	defer stopSessionMaintenance()
+	auth.NewCallbackHandler(db, cfg, auditor, logger, limiter, sessionManager).Mount(r)
+	admin.New(db, logger, cfg, auditor, limiter, sessionManager).Mount(r)
+	devices.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter, sessionManager).Mount(r)
+	mobile.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter, sessionManager).Mount(r)
+	services.New(db, logger, cfg, auditor, limiter, sessionManager).Mount(r)
+	sessions.New(db, rdb, logger, cfg, policyEngine, limiter, auditor, sessionManager).Mount(r)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ServerPort),

@@ -33,7 +33,8 @@ test.describe("System page", () => {
   test("JWT claims are displayed", async ({ page }) => {
     const claimsBlock = page.locator("#jwt-claims");
     await expect(claimsBlock).toContainText("is_super", { timeout: 5000 });
-    await expect(claimsBlock).toContainText("agent.smith@dev.local");
+    await expect(claimsBlock).toContainText("jti");
+    await expect(claimsBlock).not.toContainText("agent.smith@dev.local");
   });
 
   test("audit log section is visible", async ({ page }) => {

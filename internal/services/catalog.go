@@ -23,26 +23,31 @@ import (
 
 // Handler serves service-catalog HTTP endpoints.
 type Handler struct {
-	db      *store.DB
-	logger  *zap.Logger
-	cfg     config.Config
-	audit   *audit.Logger
-	limiter ratelimit.Limiter
+	validator auth.SessionValidator
+	db        *store.DB
+	logger    *zap.Logger
+	cfg       config.Config
+	audit     *audit.Logger
+	limiter   ratelimit.Limiter
 }
 
 // New creates a services Handler with the given dependencies.
-func New(db *store.DB, logger *zap.Logger, cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter, validators ...auth.SessionValidator) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	return &Handler{db: db, logger: logger, cfg: cfg, audit: auditor, limiter: limiter}
+	validator := auth.SessionValidator(auth.NewSessionManager(db, cfg))
+	if len(validators) > 0 {
+		validator = validators[0]
+	}
+	return &Handler{validator: validator, db: db, logger: logger, cfg: cfg, audit: auditor, limiter: limiter}
 }
 
 // Mount registers service-catalog routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter))
+		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter, h.validator))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/devices/{id}/services", h.handleUpsertServices)
 		r.Get("/api/v1/devices/{id}/services", h.handleListDeviceServices)
