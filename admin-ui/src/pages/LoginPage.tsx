@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { DebugSessionButton } from "../components/DebugSessionButton";
 
 export function LoginPage() {
   const [devEnabled, setDevEnabled] = useState(false);
@@ -14,6 +15,7 @@ export function LoginPage() {
 
   return (
     <div className="h-full flex flex-col items-center justify-center">
+      <DebugSessionButton mode="import" />
       <div className="flex flex-col items-center gap-6">
         {/* Icon */}
         <img
