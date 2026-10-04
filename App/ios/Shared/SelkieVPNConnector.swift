@@ -20,7 +20,7 @@ public enum SelkieVPNError: LocalizedError {
 public final class SelkieVPNConnector {
     private var manager: NETunnelProviderManager?
     private var enrolledDeviceID: String?
-    public private(set) var isConnected = false
+    public var isConnected: Bool { manager?.connection.status == .connected }
     public init() {}
 
     public func connect(token: String, apiBaseURL: URL, hostname: String,
@@ -89,7 +89,7 @@ public final class SelkieVPNConnector {
         try selected.connection.startVPNTunnel()
         manager = selected
         for _ in 0..<80 {
-            if selected.connection.status == .connected { isConnected = true; return }
+            if selected.connection.status == .connected { return }
             if selected.connection.status == .invalid { break }
             try await Task.sleep(for: .milliseconds(250))
         }
@@ -113,7 +113,6 @@ public final class SelkieVPNConnector {
     }
 
     public func disconnect() {
-        isConnected = false
         manager?.connection.stopVPNTunnel()
     }
 
