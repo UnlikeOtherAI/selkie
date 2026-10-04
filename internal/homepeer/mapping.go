@@ -40,8 +40,6 @@ type Mapping struct {
 
 // MapUDP discovers a LAN gateway and creates one renewable UDP mapping. SSDP
 // responses, redirects, root descriptions and control URLs stay on the LAN.
-//
-//nolint:gocognit,gocyclo // Keep bounded LAN discovery and mapping ownership checks together.
 func MapUDP(ctx context.Context, port int) (*Mapping, error) {
 	if port < 1 || port > 65535 {
 		return nil, errors.New("invalid UDP listen port")
@@ -57,7 +55,7 @@ func MapUDP(ctx context.Context, port int) (*Mapping, error) {
 	}
 	local := localAddress.Addr().String()
 	_ = probe.Close()
-	udp, err := httpu.NewHTTPUClient()
+	udp, err := httpu.NewHTTPUClientAddr(local)
 	if err != nil {
 		return nil, err
 	}
@@ -72,31 +70,56 @@ func MapUDP(ctx context.Context, port int) (*Mapping, error) {
 	// The library uses this transport for description downloads; each request
 	// is constrained before it can leave the machine, including redirects.
 	goupnp.HTTPClientDefault = &http.Client{Timeout: 5 * time.Second, Transport: lanTransport{local: local}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("gateway redirects forbidden") }}
+	if len(responses) == 0 {
+		return nil, fmt.Errorf("no IGD:2 router replied on home interface %s; relay is disabled", local)
+	}
+	var lastError error
 	for _, response := range responses {
 		if response.Body != nil {
 			_ = response.Body.Close()
 		}
-		location, err := url.Parse(response.Header.Get("Location"))
-		if err != nil || !localURL(location, local) {
+		location, parseLocationErr := url.Parse(response.Header.Get("Location"))
+		if parseLocationErr != nil || !localURL(location, local) {
 			continue
 		}
-		clients, err := internetgateway2.NewWANIPConnection2ClientsByURLCtx(discoveryCtx, location)
-		if err != nil {
-			continue
-		}
-		for _, candidate := range clients {
-			if !localURL(&candidate.SOAPClient.EndpointURL, local) || candidate.SOAPClient.EndpointURL.Hostname() != location.Hostname() {
-				continue
-			}
-			candidate.SOAPClient.HTTPClient = *goupnp.HTTPClientDefault
-			mapping := &Mapping{gateway: candidate, port: uint16(port), local: local}
-			if err := mapping.create(discoveryCtx); err != nil {
-				continue
-			}
+		// Discovery deliberately waits for its response window. SOAP must not
+		// inherit that consumed deadline, especially on a busy multi-NIC host.
+		attempt, stop := context.WithTimeout(ctx, 15*time.Second)
+		mapping, mappingErr := mapGateway(attempt, location, local, uint16(port))
+		stop()
+		if mappingErr == nil {
 			return mapping, nil
 		}
+		lastError = mappingErr
 	}
-	return nil, errors.New("no usable direct UDP mapping; configure an explicit reachable WireGuard endpoint (relay is disabled)")
+	if lastError != nil {
+		return nil, fmt.Errorf("direct UDP mapping failed: %w; relay is disabled", lastError)
+	}
+	return nil, errors.New("no usable LAN gateway description; relay is disabled")
+}
+
+func mapGateway(ctx context.Context, location *url.URL, local string, port uint16) (*Mapping, error) {
+	clients, err := internetgateway2.NewWANIPConnection2ClientsByURLCtx(ctx, location)
+	if err != nil {
+		return nil, fmt.Errorf("gateway description request failed: %w", err)
+	}
+	var lastError error
+	for _, candidate := range clients {
+		if !localURL(&candidate.SOAPClient.EndpointURL, local) || candidate.SOAPClient.EndpointURL.Hostname() != location.Hostname() {
+			continue
+		}
+		candidate.SOAPClient.HTTPClient = *goupnp.HTTPClientDefault
+		mapping := &Mapping{gateway: candidate, port: port, local: local}
+		if createErr := mapping.create(ctx); createErr != nil {
+			lastError = createErr
+			continue
+		}
+		return mapping, nil
+	}
+	if lastError != nil {
+		return nil, lastError
+	}
+	return nil, errors.New("gateway has no usable LAN WANIPConnection:2 service")
 }
 
 type lanTransport struct{ local string }
