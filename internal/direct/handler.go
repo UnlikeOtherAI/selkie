@@ -80,7 +80,8 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Claims) (Snapshot, error) {
 	var ip, platform string
 	var port *int
-	err := h.db.Pool.QueryRow(ctx, `SELECT host(d.overlay_ip),d.os_platform,d.direct_home_port FROM devices d JOIN device_keys k ON k.device_id=d.id AND k.state='active' WHERE d.id=$1 AND d.owner_user_id=$2 AND d.status='active' AND d.overlay_ip IS NOT NULL AND ($3='' OR d.direct_scoped)`, deviceID, claims.Sub, claims.DirectHomeID).Scan(&ip, &platform, &port)
+	var sourceScoped bool
+	err := h.db.Pool.QueryRow(ctx, `SELECT host(d.overlay_ip),d.os_platform,d.direct_home_port,d.direct_scoped FROM devices d JOIN device_keys k ON k.device_id=d.id AND k.state='active' WHERE d.id=$1 AND d.owner_user_id=$2 AND d.status='active' AND d.overlay_ip IS NOT NULL AND ($3='' OR d.direct_scoped)`, deviceID, claims.Sub, claims.DirectHomeID).Scan(&ip, &platform, &port, &sourceScoped)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -92,14 +93,17 @@ func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Cla
 		return Snapshot{}, errors.New("home service not registered")
 	}
 	rows, err := h.db.Pool.Query(ctx, `SELECT d.id,k.wg_public_key,host(d.overlay_ip),coalesce(d.external_endpoint_host,''),coalesce(d.external_endpoint_port,0),coalesce(d.direct_home_port,0),
- CASE WHEN d.owner_user_id=$1 AND NOT d.direct_scoped THEN NULL ELSE
+ CASE WHEN d.owner_user_id=$1 AND NOT d.direct_scoped AND ($5='' OR (d.id<>NULLIF($5,'')::uuid AND $2<>NULLIF($5,'')::uuid)) THEN NULL ELSE
  (SELECT min(g.expires_at) FROM direct_home_grants g WHERE g.expires_at>now() AND (($3 AND g.mobile_device_id=$2 AND g.home_device_id=d.id) OR (NOT $3 AND g.home_device_id=$2 AND g.mobile_device_id=d.id))) END
  FROM devices d JOIN device_keys k ON k.device_id=d.id AND k.state='active'
  WHERE d.status='active' AND d.id<>$2 AND d.overlay_ip IS NOT NULL
  AND ((d.owner_user_id=$1 AND NOT d.direct_scoped) OR EXISTS (SELECT 1 FROM direct_home_grants g WHERE g.expires_at>now() AND (($3 AND g.mobile_device_id=$2 AND g.home_device_id=d.id) OR (NOT $3 AND g.home_device_id=$2 AND g.mobile_device_id=d.id))))
  AND (NOT $3 OR $4='' OR d.id::text=$4)
+ AND ($5='' OR (d.id<>NULLIF($5,'')::uuid AND $2<>NULLIF($5,'')::uuid)
+   OR ($3 AND $6 AND d.id=NULLIF($5,'')::uuid AND EXISTS(SELECT 1 FROM direct_home_grants g WHERE g.mobile_device_id=$2 AND g.home_device_id=d.id AND g.expires_at>now()))
+   OR (NOT $3 AND $2=NULLIF($5,'')::uuid AND d.direct_scoped AND EXISTS(SELECT 1 FROM direct_home_grants g WHERE g.mobile_device_id=d.id AND g.home_device_id=$2 AND g.expires_at>now())))
  AND (($3 AND d.direct_home_port IS NOT NULL) OR (NOT $3 AND d.os_platform IN ('ios','android','tvos')))
- ORDER BY d.id`, claims.Sub, deviceID, mobile, claims.DirectHomeID)
+ ORDER BY d.id`, claims.Sub, deviceID, mobile, claims.DirectHomeID, h.cfg.RafikiHomeDeviceID, sourceScoped)
 	if err != nil {
 		return Snapshot{}, err
 	}

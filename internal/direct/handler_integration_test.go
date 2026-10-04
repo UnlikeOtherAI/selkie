@@ -98,7 +98,7 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 		t.Fatal(checkedErr4)
 	}
 	secret := strings.Repeat("signed-session-secret-", 3)
-	cfg := config.Config{InternalSessionSecret: secret, WGServerPublicKey: base64.StdEncoding.EncodeToString(bytesOf(11)), WGServerEndpoint: "relay.selkie.live", WGServerPort: 51820, WGOverlayCIDR: "10.101.0.0/16"}
+	cfg := config.Config{InternalSessionSecret: secret, WGServerPublicKey: base64.StdEncoding.EncodeToString(bytesOf(11)), WGServerEndpoint: "relay.selkie.live", WGServerPort: 51820, WGOverlayCIDR: "10.101.0.0/16", RafikiHomeDeviceID: home}
 	router := chi.NewRouter()
 	direct.New(db, cfg, nil, ratelimit.NewMemoryLimiter()).Mount(router)
 	allocator, allocErr := overlay.New(db.Pool, cfg.WGOverlayCIDR)
@@ -110,6 +110,32 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 	ordinary := insertDevice(ctx, t, db, guest, "ordinary-phone", "ios", network+"5", "unused", 13)
+	ordinaryOwner := insertDevice(ctx, t, db, owner, "ordinary-owner-phone", "ios", network+"6", "unused", 15)
+	// Owning the configured Rafiki data machine does not bypass team grants.
+	ownerToken := mintDirectToken(t, owner, "", secret, time.Now().Add(time.Minute))
+	for attempt := range 2 {
+		ordinarySocket, ordinaryResponse, ordinaryErr := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/"+ordinaryOwner+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + ownerToken}}})
+		if ordinaryResponse != nil && ordinaryResponse.Body != nil {
+			_ = ordinaryResponse.Body.Close()
+		}
+		if ordinaryErr != nil {
+			t.Fatal(ordinaryErr)
+		}
+		var ownerView direct.Snapshot
+		if readErr := wsjson.Read(ctx, ordinarySocket, &ownerView); readErr != nil {
+			t.Fatal(readErr)
+		}
+		_ = ordinarySocket.CloseNow()
+		if len(ownerView.Peers) != 1 || ownerView.Peers[0].DeviceID != otherHome {
+			t.Fatal("ordinary owner bypassed configured-home grant or lost generic Selkie home")
+		}
+		if attempt == 0 {
+			// Even a legacy ordinary-row grant must not defeat the scoped flag.
+			if _, grantErr := db.Pool.Exec(ctx, `INSERT INTO direct_home_grants(mobile_device_id,home_device_id,expires_at) VALUES($1,$2,now()+interval '1 minute')`, ordinaryOwner, home); grantErr != nil {
+				t.Fatal(grantErr)
+			}
+		}
+	}
 	scopeToken := mintDirectToken(t, guest, home, secret, time.Now().Add(time.Minute))
 	for _, path := range []string{"/api/v1/mobile/servers", "/api/v1/mobile/disconnect"} {
 		method := http.MethodGet
@@ -273,6 +299,38 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 	}
 	if len(snapshot.Peers) != 0 {
 		t.Fatal("retired mobile key retained access")
+	}
+	// A same-owner scoped device still needs, and receives, a bounded lease.
+	ownerScoped := insertDevice(ctx, t, db, owner, "scoped-owner-phone", "tvos", network+"7", "unused", 16)
+	if _, scopeErr := db.Pool.Exec(ctx, `UPDATE devices SET direct_scoped=true WHERE id=$1`, ownerScoped); scopeErr != nil {
+		t.Fatal(scopeErr)
+	}
+	ownerGrant := mintDirectToken(t, owner, home, secret, time.Now().Add(3*time.Second))
+	ownerSocket, ownerResponse, ownerErr := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/"+ownerScoped+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + ownerGrant}}})
+	if ownerResponse != nil && ownerResponse.Body != nil {
+		_ = ownerResponse.Body.Close()
+	}
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	defer ownerSocket.CloseNow()
+	if readErr := wsjson.Read(ctx, ownerSocket, &snapshot); readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(snapshot.Peers) != 1 || snapshot.Peers[0].DeviceID != home || snapshot.Peers[0].ValidUntil == nil {
+		t.Fatal("same-owner scoped home route was unbounded")
+	}
+	if readErr := wsjson.Read(ctx, homeSocket, &snapshot); readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(snapshot.Peers) != 1 || snapshot.Peers[0].DeviceID != ownerScoped || snapshot.Peers[0].ValidUntil == nil {
+		t.Fatal("configured home exposed an ordinary or unbounded owner peer")
+	}
+	if readErr := wsjson.Read(ctx, homeSocket, &snapshot); readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(snapshot.Peers) != 0 {
+		t.Fatal("same-owner scoped lease did not expire")
 	}
 	if _, checkedErr14 := db.Pool.Exec(ctx, `UPDATE devices SET status='revoked',revoked_at=now() WHERE id=$1`, home); checkedErr14 != nil {
 		t.Fatal(checkedErr14)
