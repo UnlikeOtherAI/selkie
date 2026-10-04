@@ -106,11 +106,9 @@ public final class SelkieVPNConnector {
         let key = try deviceKey(namespace: extensionBundleIdentifier + "." + fingerprint)
         let managers = try await loadManagers()
         if Task.isCancelled {
-            for candidate in managers {
-                if (candidate.protocolConfiguration as? NETunnelProviderProtocol)?
-                    .providerBundleIdentifier == extensionBundleIdentifier {
-                    candidate.connection.stopVPNTunnel()
-                }
+            for candidate in managers where (candidate.protocolConfiguration as? NETunnelProviderProtocol)?
+                .providerBundleIdentifier == extensionBundleIdentifier {
+                candidate.connection.stopVPNTunnel()
             }
             try Task.checkCancellation()
         }
