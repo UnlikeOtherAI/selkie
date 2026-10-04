@@ -29,6 +29,9 @@ from its authenticated server session, never request-body identity. It bounds
 expiry to the current UOA authorization window and five minutes. An admitted
 team member can connect across home ownership; no Selkie invitation is needed.
 Team removal denies renewal and installed leases expire on both endpoints.
+The configured Rafiki home accepts only scoped mobile devices with an unexpired
+grant, including devices belonging to its owner. Ordinary Selkie owner access
+cannot bypass Rafiki team admission or create an unbounded lease.
 UOA remains the identity and team authority; Selkie persists only its stable
 subject reference and product-specific device/grant records.
 
