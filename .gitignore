@@ -35,3 +35,8 @@ coverage.html
 node_modules/
 .pnpm-store/
 restore-services.sh
+
+# Local Apple builds
+App/ios/DerivedData*/
+App/ios/*.xcresult/
+*.log

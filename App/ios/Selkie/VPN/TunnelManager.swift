@@ -69,6 +69,11 @@ final class TunnelManager: TunnelManaging {
     ///
     /// Pure and side-effect free so it can be unit-tested without a tunnel host.
     nonisolated static func onDemandRules() -> [NEOnDemandRule] {
+        #if os(tvOS)
+        let rule = NEOnDemandRuleConnect()
+        rule.interfaceTypeMatch = .any
+        return [rule]
+        #else
         let wifiRule = NEOnDemandRuleConnect()
         wifiRule.interfaceTypeMatch = .wiFi
 
@@ -76,6 +81,7 @@ final class TunnelManager: TunnelManaging {
         cellularRule.interfaceTypeMatch = .cellular
 
         return [wifiRule, cellularRule]
+        #endif
     }
 
     func stop() async throws {

@@ -2,6 +2,19 @@ import XCTest
 @testable import Selkie
 
 final class AppConfigTests: XCTestCase {
+    func testEnrollmentUsesSafeDeviceHostnameAndCorrectExtension() {
+        XCTAssertEqual(AppConfig.enrollmentHostname("Ondrej’s Apple TV"), "ondrej-s-apple-tv")
+        XCTAssertEqual(AppConfig.enrollmentHostname("---"), "selkie-device")
+        XCTAssertLessThanOrEqual(AppConfig.enrollmentHostname(String(repeating: "TV ", count: 50)).count, 63)
+        #if os(tvOS)
+        XCTAssertEqual(AppConfig.osPlatform, "tvos")
+        XCTAssertEqual(AppConfig.tunnelExtensionBundleIdentifier, "com.unlikeotherai.selkie.tvos.tunnel")
+        #else
+        XCTAssertEqual(AppConfig.osPlatform, "ios")
+        XCTAssertEqual(AppConfig.tunnelExtensionBundleIdentifier, "com.unlikeotherai.selkie.ios.tunnel")
+        #endif
+    }
+
     func testHandoffCodeAndStateParsing() {
         let callbackURL = URL(string: "selkie://auth?handoff_code=abc123&state=expected-state")!
 

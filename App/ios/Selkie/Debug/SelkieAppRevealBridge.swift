@@ -1,6 +1,6 @@
 import Foundation
 
-#if DEBUG
+#if DEBUG && !os(tvOS)
 import AppReveal
 
 final class SelkieAppRevealBridge: StateProviding, NavigationProviding {

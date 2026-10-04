@@ -37,7 +37,7 @@ SET status = 'revoked',
     updated_at = now()
 WHERE owner_user_id = $1
   AND status = 'active'
-  AND os_platform IN ('ios', 'android')
+  AND os_platform IN ('ios', 'android', 'tvos')
 RETURNING id
 `, userID)
 	if err != nil {

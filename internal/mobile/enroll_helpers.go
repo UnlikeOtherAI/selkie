@@ -116,8 +116,8 @@ func validateEnrollRequest(req enrollRequest) error {
 		return err
 	}
 	platform := strings.TrimSpace(req.OSPlatform)
-	if platform != platformIOS && platform != "android" {
-		return &enrollValidationError{Field: fieldOSPlatform, Reason: "must be 'ios' or 'android'"}
+	if platform != platformIOS && platform != "android" && platform != "tvos" {
+		return &enrollValidationError{Field: fieldOSPlatform, Reason: "must be 'ios', 'android', or 'tvos'"}
 	}
 	if err := validateBoundedField("os_arch", req.OSArch, maxOSArchLen); err != nil {
 		return err

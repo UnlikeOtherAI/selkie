@@ -29,4 +29,4 @@ if [ ! -d "$GO_SRC" ]; then
 fi
 
 echo "Building WireGuard Go bridge for ${PLATFORM_NAME:-unknown} (${ARCHS:-unknown}) from ${GO_SRC}"
-make -C "$GO_SRC" GOOS_iphonesimulator=ios
+make -C "$GO_SRC" GOOS_iphonesimulator=ios GOOS_appletvos=ios GOOS_appletvsimulator=ios

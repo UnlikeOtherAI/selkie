@@ -215,6 +215,10 @@ func TestValidateEnrollRequest(t *testing.T) {
 			wantField: "hostname",
 		},
 		{
+			name: "Apple TV",
+			req:  enrollRequest{Hostname: "apple-tv", OSPlatform: "tvos", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
+		},
+		{
 			name:      "unsupported os_platform",
 			req:       enrollRequest{Hostname: "iphone", OSPlatform: "darwin", OSArch: "arm64", AppVersion: "1.0.0", WGPublicKey: validWGKey},
 			wantField: "os_platform",

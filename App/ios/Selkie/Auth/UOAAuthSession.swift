@@ -1,7 +1,7 @@
 import AuthenticationServices
 import UIKit
 
-final class UOAAuthSession: NSObject, ASWebAuthenticationPresentationContextProviding, AuthSessioning {
+final class UOAAuthSession: NSObject, AuthSessioning {
     private var session: ASWebAuthenticationSession?
 
     func authorize() async throws -> String {
@@ -32,13 +32,19 @@ final class UOAAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
                 continuation.resume(returning: handoffCode)
             }
 
+            #if !os(tvOS)
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = true
+            #endif
             self.session = session
             session.start()
         }
     }
 
+}
+
+#if !os(tvOS)
+extension UOAAuthSession: ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -46,3 +52,5 @@ final class UOAAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
             .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
     }
 }
+
+#endif

@@ -1,13 +1,13 @@
 import Foundation
 
-#if DEBUG
+#if DEBUG && !os(tvOS)
 import AppReveal
 #endif
 
 @MainActor
 enum AppRevealBootstrap {
     static func activateIfNeeded() {
-        #if DEBUG
+        #if DEBUG && !os(tvOS)
         guard !isRunningTests else {
             return
         }
@@ -19,7 +19,7 @@ enum AppRevealBootstrap {
     }
 
     static func attachIfNeeded(appState: AppStateMachine) {
-        #if DEBUG
+        #if DEBUG && !os(tvOS)
         guard !isRunningTests else {
             return
         }

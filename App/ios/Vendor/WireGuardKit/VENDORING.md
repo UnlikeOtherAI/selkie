@@ -23,24 +23,23 @@ remote SwiftPM dependency under the current toolchain (Xcode 26 / Go 1.26):
    `u_int32_t` / `u_char` / `u_int16_t` without including `<sys/types.h>`; strict Clang
    modules now require the direct include.
 
-Vendoring lets us keep the official 2023 source verbatim while applying the two minimal
-fixes needed to build today.
+Vendoring lets us keep the official 2023 source verbatim while applying the build and platform changes listed below.
 
 ## Changes from upstream
 
 - `Package.swift`: `swift-tools-version` raised to 5.9 and platforms set to
-  `.iOS(.v15)` / `.macOS(.v11)` (a consistent, valid manifest). Target structure is
+  `.iOS(.v15)` / `.macOS(.v11)` / `.tvOS(.v17)` (a consistent, valid manifest). Target structure is
   otherwise identical to upstream.
 - `Sources/WireGuardKitC/WireGuardKitC.h`: added `#include <sys/types.h>`.
 
-Everything else (the Swift `WireGuardKit` sources, the C key/x25519 code, and the
-`WireGuardKitGo` bridge incl. its Makefile) is unmodified upstream code.
+- Swift platform conditionals include tvOS alongside iOS for DNS, socket handling,
+  MTU and connectivity changes. The C implementation and Go bridge remain unchanged.
 
 ## Go bridge
 
 SwiftPM cannot compile the Go bridge. It is built by
 `App/ios/scripts/build-wireguard-go-bridge.sh`, invoked as a pre-build phase on the
 `SelkieTunnelExtension` target, which runs the upstream `Makefile` to produce
-`libwg-go.a`. The script also maps `GOOS=ios` for the iOS Simulator (upstream maps only
-device and macOS), so the extension compiles for the simulator too. A Go toolchain
+`libwg-go.a`. The script also maps `GOOS=ios` for the iOS Simulator and tvOS device/simulator (upstream maps only
+iOS device and macOS), so the extension compiles for the simulator too. A Go toolchain
 (`brew install go`) is required to build.

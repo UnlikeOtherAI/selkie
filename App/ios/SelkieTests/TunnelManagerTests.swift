@@ -6,6 +6,10 @@ final class TunnelManagerTests: XCTestCase {
     func testOnDemandRulesCoverWiFiAndCellular() {
         let rules = TunnelManager.onDemandRules()
 
+        #if os(tvOS)
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules.first?.interfaceTypeMatch, .any)
+        #else
         XCTAssertEqual(rules.count, 2)
         XCTAssertTrue(rules.allSatisfy { $0 is NEOnDemandRuleConnect })
         XCTAssertTrue(rules.allSatisfy { $0.action == .connect })
@@ -13,5 +17,6 @@ final class TunnelManagerTests: XCTestCase {
         let interfaceTypes = Set(rules.map { $0.interfaceTypeMatch })
         XCTAssertTrue(interfaceTypes.contains(.wiFi))
         XCTAssertTrue(interfaceTypes.contains(.cellular))
+        #endif
     }
 }
