@@ -14,7 +14,7 @@ import (
 // payload and the dev-status response.
 const fieldEnabled = "enabled"
 
-func uoaConfigRedirectURLs(cfg CallbackHandler) []string {
+func uoaConfigRedirectURLs(cfg *CallbackHandler) []string {
 	seen := make(map[string]struct{}, 2)
 	redirectURLs := make([]string, 0, 2)
 	for _, candidate := range []string{
@@ -100,7 +100,7 @@ func uoaJWKSURL(configURL string) (string, error) {
 // auto-discover and approve this integration.
 func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request) {
 	domain, err := uoaConfigDomain(h.cfg)
-	redirectURLs := uoaConfigRedirectURLs(*h)
+	redirectURLs := uoaConfigRedirectURLs(h)
 	jwksURL, jwksErr := uoaJWKSURL(h.cfg.UOAConfigURL)
 	contactEmail := strings.TrimSpace(h.cfg.UOAContactEmail)
 	if err != nil || jwksErr != nil || strings.TrimSpace(h.cfg.UOAConfigURL) == "" ||

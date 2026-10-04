@@ -63,6 +63,7 @@ type CallbackHandler struct {
 	// mobile login uses — so the user row a brokered session produces is
 	// identical to a normal login (first user becomes super, etc.).
 	upsertUserFn func(ctx context.Context, claims *UOAClaims) (string, bool, error)
+	profiles     profileCache
 }
 
 // NewCallbackHandler creates a CallbackHandler with the given database, config, and audit logger.
@@ -88,6 +89,8 @@ func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Post("/api/v1/internal/rafiki-session", h.ServeRafikiSession)
 	r.Get("/auth/dev-status", h.ServeDevStatus)
 	r.Get("/auth/dev-login", h.ServeDevLogin)
+	r.With(Middleware(h.cfg, h.audit, h.limiter), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/session", h.ServeReferenceSession)
+	r.With(Middleware(h.cfg, h.audit, h.limiter), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/profile", h.ServeProfile)
 }
 
 // ServeLogin issues a fresh PKCE verifier cookie and redirects to the UOA
@@ -122,7 +125,7 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	userID, isSuper, uoaClaims, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOARedirectURL, verifier)
+	userID, isSuper, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOARedirectURL, verifier)
 	if err != nil {
 		writeExchangeError(w, err)
 		return
@@ -130,12 +133,7 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 
 	h.auditLogin(r.Context(), r, userID)
 
-	email := uoaClaims.Email
-	displayName := uoaClaims.DisplayName
-	if displayName == "" {
-		displayName = email
-	}
-	token, err := h.mintToken(userID, isSuper, email, displayName, "", []string{AudienceAdmin})
+	token, err := h.mintToken(userID, isSuper, []string{AudienceAdmin})
 	if err != nil {
 		http.Error(w, "token error", http.StatusInternalServerError)
 		return
@@ -153,7 +151,7 @@ func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Req
 		http.Error(w, "missing or expired login session", http.StatusBadRequest)
 		return
 	}
-	userID, _, _, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOAMobileRedirectURL, verifier)
+	userID, _, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOAMobileRedirectURL, verifier)
 	if err != nil {
 		writeExchangeError(w, err)
 		return
@@ -257,7 +255,7 @@ RETURNING u.id, u.is_super
 		return
 	}
 
-	token, err := h.mintToken(userID, isSuper, "", "", "", []string{AudienceMobile})
+	token, err := h.mintToken(userID, isSuper, []string{AudienceMobile})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to mint session token")
 		return
@@ -323,9 +321,9 @@ func (h *CallbackHandler) handleInvalidMobileHandoff(ctx context.Context, w http
 	writeJSONError(w, http.StatusUnauthorized, "invalid mobile handoff code")
 }
 
-func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redirectURL, codeVerifier string) (string, bool, *UOAClaims, error) {
+func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redirectURL, codeVerifier string) (string, bool, error) {
 	if strings.TrimSpace(code) == "" {
-		return "", false, nil, errMissingCode
+		return "", false, errMissingCode
 	}
 
 	uoaClaims, err := ExchangeCode(ctx, code, redirectURL, codeVerifier)
@@ -336,15 +334,15 @@ func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redir
 		if h.logger != nil {
 			h.logger.Warn("uoa code exchange failed", zap.Error(err))
 		}
-		return "", false, nil, errAuthFailed
+		return "", false, errAuthFailed
 	}
 
 	userID, isSuper, err := h.upsertUser(ctx, uoaClaims)
 	if err != nil {
-		return "", false, nil, errInternal
+		return "", false, errInternal
 	}
 
-	return userID, isSuper, uoaClaims, nil
+	return userID, isSuper, nil
 }
 
 func (h *CallbackHandler) createMobileHandoffCode(ctx context.Context, userID string) (string, error) {
@@ -432,11 +430,8 @@ func (h *CallbackHandler) upsertUser(ctx context.Context, claims *UOAClaims) (st
 }
 
 type jwtClaims struct {
-	Sub         string `json:"sub"`
-	IsSuper     bool   `json:"is_super"`
-	Email       string `json:"email,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	Picture     string `json:"picture,omitempty"`
+	Sub     string `json:"sub"`
+	IsSuper bool   `json:"is_super"`
 	jwt.RegisteredClaims
 }
 
@@ -444,17 +439,14 @@ type jwtClaims struct {
 // JWT is valid until exp. Mitigating this requires a server-side session table
 // keyed on `jti` with a per-request lookup in auth.Middleware (or an explicit
 // revocation list). Tracked separately; not a regression introduced here.
-func (h *CallbackHandler) mintToken(userID string, isSuper bool, email, displayName, picture string, audience []string) (string, error) {
+func (h *CallbackHandler) mintToken(userID string, isSuper bool, audience []string) (string, error) {
 	if len(audience) == 0 {
 		return "", errors.New("audience is required")
 	}
 	now := time.Now()
 	c := jwtClaims{
-		Sub:         userID,
-		IsSuper:     isSuper,
-		Email:       email,
-		DisplayName: displayName,
-		Picture:     picture,
+		Sub:     userID,
+		IsSuper: isSuper,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    Issuer,
 			Subject:   userID,

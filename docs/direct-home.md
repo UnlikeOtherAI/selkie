@@ -146,3 +146,11 @@ Set `SELKIE_DIRECT_TEST_DATABASE_URL` to an isolated PostgreSQL database to run
 migrations in a disposable schema and verifies persisted enrollment, scoped
 API denials, grants, expiry, renewal and revocation. CI provides this database;
 local runs without the variable explicitly skip this proof.
+
+Browser administration also keeps human profile fields out of persisted session
+JWTs. Existing browser tokens are replaced by reference-only tokens with the
+same expiry, and legacy profile-bearing localStorage entries are removed before
+exchange. The sidebar reads authenticated self display data through UOA's exact
+`/domain/users?user_id=` API. The server cache lasts 30 seconds and holds at most
+256 references in memory; UOA refusal after expiry never uses copied fallback
+profiles. API display fields are not authentication or membership authority.

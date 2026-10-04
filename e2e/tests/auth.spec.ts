@@ -18,6 +18,40 @@ test.describe("Auth", () => {
     await expect(userInfo).toContainText("Agent Smith");
   });
 
+  test("profile display uses the API while persisted JWT contains only references", async ({ page }) => {
+    await devLogin(page);
+    await expect(page.locator("#user-email")).toContainText("Agent Smith");
+    const claims = await page.evaluate(() => {
+      const token = localStorage.getItem("selkie_jwt")!;
+      return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    });
+    expect(claims.sub).toBeTruthy();
+    expect(claims).not.toHaveProperty("email");
+    expect(claims).not.toHaveProperty("display_name");
+    expect(claims).not.toHaveProperty("picture");
+  });
+
+  test("legacy copied profiles are removed from persisted session on reload", async ({ page }) => {
+    await devLogin(page);
+    const oldClaims = await page.evaluate(() => {
+      const token = localStorage.getItem("selkie_jwt")!;
+      return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    });
+    const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    const body = Buffer.from(JSON.stringify({ ...oldClaims, email: "old@example.com", display_name: "Old Copy" })).toString("base64url");
+    const signature = createHmac("sha256", "e2e-test-secret-that-is-long-enough").update(`${header}.${body}`).digest("base64url");
+    await page.evaluate((token) => localStorage.setItem("selkie_jwt", token), `${header}.${body}.${signature}`);
+    await page.reload();
+    await expect(page.locator("#user-email")).toContainText("Agent Smith");
+    const migrated = await page.evaluate(() => {
+      const token = localStorage.getItem("selkie_jwt")!;
+      return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    });
+    expect(migrated.exp).toBe(oldClaims.exp);
+    expect(migrated).not.toHaveProperty("email");
+    expect(migrated).not.toHaveProperty("display_name");
+  });
+
   test("dev login shows avatar", async ({ page }) => {
     await devLogin(page);
     const avatar = page.locator("#user-avatar");

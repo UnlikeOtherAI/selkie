@@ -18,6 +18,10 @@ async function globalTeardown() {
     }
   }
 
+  if (state.uoaPid) {
+    try { process.kill(state.uoaPid, "SIGTERM"); } catch { /* Already exited. */ }
+  }
+
   // Drop test database.
   if (state.dbName && state.pgUrl) {
     const admin = new Client({ connectionString: state.pgUrl });

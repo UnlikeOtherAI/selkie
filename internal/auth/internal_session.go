@@ -86,7 +86,7 @@ func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *htt
 		return
 	}
 
-	token, err := h.mintToken(userID, isSuper, "", "", "", []string{AudienceMobile})
+	token, err := h.mintToken(userID, isSuper, []string{AudienceMobile})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to mint session token")
 		return

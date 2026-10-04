@@ -1,4 +1,6 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { apiFetch } from "../lib/api";
 import type { JWTClaims } from "../lib/auth";
 import { removeToken } from "../lib/auth";
 
@@ -84,6 +86,23 @@ function navLinkCls({ isActive }: { isActive: boolean }) {
 
 export function Sidebar({ claims }: { claims: JWTClaims | null }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [profile, setProfile] = useState<{ email?: string; display_name?: string; picture?: string } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setProfile(null);
+    const refresh = async () => {
+      try {
+        const response = await apiFetch("/api/v1/auth/profile", { signal: controller.signal, cache: "no-store" });
+        if (!response.ok) { setProfile(null); return; }
+        const value = await response.json();
+        if (!controller.signal.aborted) setProfile(value);
+      } catch { if (!controller.signal.aborted) setProfile(null); }
+    };
+    void refresh();
+    window.addEventListener("focus", refresh);
+    return () => { controller.abort(); window.removeEventListener("focus", refresh); };
+  }, [claims?.sub, location.pathname]);
 
   const handleSignOut = () => {
     removeToken();
@@ -91,10 +110,10 @@ export function Sidebar({ claims }: { claims: JWTClaims | null }) {
   };
 
   const initial =
-    claims?.display_name?.[0]?.toUpperCase() ||
-    claims?.email?.[0]?.toUpperCase() ||
+    profile?.display_name?.[0]?.toUpperCase() ||
+    profile?.email?.[0]?.toUpperCase() ||
     "U";
-  const name = claims?.display_name || claims?.email || "User";
+  const name = profile?.display_name || profile?.email || "User";
 
   return (
     <aside className="w-56 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800">
@@ -147,10 +166,10 @@ export function Sidebar({ claims }: { claims: JWTClaims | null }) {
       {/* User footer */}
       <div className="border-t border-slate-800 px-4 py-3">
         <div className="flex items-center gap-2.5">
-          {claims?.picture ? (
+          {profile?.picture ? (
             <img
               id="user-avatar"
-              src={claims.picture}
+              src={profile.picture}
               alt=""
               crossOrigin="anonymous"
               referrerPolicy="no-referrer"

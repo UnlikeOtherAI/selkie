@@ -2,9 +2,6 @@ const TOKEN_KEY = "selkie_jwt";
 
 export interface JWTClaims {
   sub: string;
-  email?: string;
-  display_name?: string;
-  picture?: string;
   is_super?: boolean;
   exp?: number;
 }
@@ -14,6 +11,10 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string): void {
+  const claims = parseJWT(token);
+  if (!claims || ["email", "display_name", "picture"].some((key) => key in claims)) {
+    throw new Error("A reference-only session is required before saving.");
+  }
   localStorage.setItem(TOKEN_KEY, token);
 }
 
