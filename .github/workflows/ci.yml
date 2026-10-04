@@ -38,6 +38,9 @@ jobs:
       - name: production compose ownership tests
         run: ./ops/compose-prod.test.sh
 
+      - name: production source synchronization tests
+        run: python3 ops/deploy-source.test.py
+
       - name: caddyfile header smoke test
         run: |
           set -euo pipefail
