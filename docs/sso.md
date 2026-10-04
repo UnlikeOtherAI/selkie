@@ -22,10 +22,11 @@ is a custom OAuth 2.0 service with a signed-config trust model.
 > loads. The per-domain secret and signing key are configured; the previous
 > pending-approval note is outdated. New installations still need UOA approval.
 >
-> **Identity authority issue:** the current implementation persists UOA email
-> and display name in `users`. This conflicts with the project identity rules.
-> See [first-use-readiness.md](first-use-readiness.md) for the required API-backed
-> refactor and migration before wider use.
+> **Identity authority:** migration 006 removes copied profile columns while
+> preserving stable UOA references and product foreign keys. Session JWTs carry
+> no email, display name, or avatar. Browser display data comes from an exact
+> authenticated-subject UOA API lookup with a bounded 30-second memory cache.
+> See [direct-home.md](direct-home.md) for session migration and embedded access.
 >
 > NOTE: the prose below this banner predates the implementation and still
 > describes the older HS256 assumption; treat the banner and

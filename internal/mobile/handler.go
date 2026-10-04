@@ -65,11 +65,12 @@ type Handler struct {
 }
 
 type enrollRequest struct {
-	Hostname    string `json:"hostname"`
-	OSPlatform  string `json:"os_platform"`
-	OSArch      string `json:"os_arch"`
-	AppVersion  string `json:"app_version"`
-	WGPublicKey string `json:"wg_public_key"`
+	DirectScoped bool   `json:"-"`
+	Hostname     string `json:"hostname"`
+	OSPlatform   string `json:"os_platform"`
+	OSArch       string `json:"os_arch"`
+	AppVersion   string `json:"app_version"`
+	WGPublicKey  string `json:"wg_public_key"`
 }
 
 type enrollResponse struct {
@@ -130,6 +131,7 @@ func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	req.DirectScoped = claims.DirectHomeID != ""
 	deviceID, overlayIP, err := h.enrollMobileDevice(ctx, claims.Sub, req)
 	if err != nil {
 		h.logger.Error("enroll mobile device", zap.Error(err), zap.String("user_id", claims.Sub))
@@ -137,8 +139,19 @@ func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if claims.DirectHomeID != "" {
+		_, grantErr := h.db.Pool.Exec(ctx, `INSERT INTO direct_home_grants (mobile_device_id,home_device_id,expires_at) SELECT $1,d.id,$3 FROM devices d WHERE d.id=$2 AND d.status='active' AND d.direct_home_port IS NOT NULL ON CONFLICT (mobile_device_id,home_device_id) DO UPDATE SET expires_at=EXCLUDED.expires_at`, deviceID, claims.DirectHomeID, claims.ExpiresAt)
+		if grantErr != nil {
+			writeError(w, http.StatusServiceUnavailable, "direct grant unavailable")
+			return
+		}
+	}
 	h.auditMobileEnroll(ctx, r, claims.Sub, deviceID)
 
+	if req.DirectScoped && overlayIP != nil {
+		writeJSON(w, http.StatusOK, enrollResponse{DeviceID: deviceID, OverlayIP: overlayIP, WGConfig: fmt.Sprintf("[Interface]\nAddress = %s/32\nMTU = 1280\n", *overlayIP)})
+		return
+	}
 	h.writeMobileEnrollSuccess(w, deviceID, claims.Sub, overlayIP)
 }
 
@@ -177,6 +190,10 @@ func (h *Handler) handleListServers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	if claims.DirectHomeID != "" {
+		writeError(w, http.StatusForbidden, "scoped home grant cannot manage mobile devices")
+		return
+	}
 
 	rows, err := h.db.Pool.Query(r.Context(), `
 SELECT d.id,
@@ -188,7 +205,7 @@ SELECT d.id,
 FROM devices d
 WHERE d.owner_user_id = $1
   AND d.status = 'active'
-  AND EXISTS (SELECT 1 FROM services s WHERE s.device_id = d.id)
+  AND (d.direct_home_port IS NOT NULL OR EXISTS (SELECT 1 FROM services s WHERE s.device_id = d.id))
 ORDER BY d.hostname ASC
 `, claims.Sub)
 	if err != nil {
@@ -221,6 +238,10 @@ func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.ClaimsFromContext(r.Context())
 	if !ok || claims.Sub == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if claims.DirectHomeID != "" {
+		writeError(w, http.StatusForbidden, "scoped home grant cannot manage mobile devices")
 		return
 	}
 

@@ -24,6 +24,7 @@ protocol AuthSessioning {
 
 @MainActor
 protocol TunnelManaging {
+    func configureDirectSession(token: String, deviceID: UUID)
     func currentStatus() async throws -> NEVPNStatus
     func start(wgConfig: String, onDemand: Bool) async throws
     func stop() async throws
@@ -31,4 +32,8 @@ protocol TunnelManaging {
 
 protocol ServerServicing {
     func fetchServers(token: String) async throws -> [MobileServer]
+}
+
+extension TunnelManaging {
+    func configureDirectSession(token: String, deviceID: UUID) {}
 }

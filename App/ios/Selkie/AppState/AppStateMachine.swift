@@ -175,6 +175,7 @@ final class AppStateMachine: ObservableObject {
         let effectiveConfig = parsedConfig.settingPrivateKey(keyPair.privateKeyBase64)
 
         phase = .startingVPN
+        tunnelManager.configureDirectSession(token: token, deviceID: enrollResponse.deviceID)
         try await tunnelManager.start(wgConfig: effectiveConfig, onDemand: false)
 
         phase = .connected

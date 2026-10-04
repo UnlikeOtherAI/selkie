@@ -44,6 +44,12 @@ async function globalSetup(config: FullConfig) {
     stdio: "pipe",
   });
 
+  // The browser obtains display fields through the product's UOA API reader.
+  const uoaPort = await getFreePort();
+  const uoaProcess = spawn(process.execPath, [join(__dirname, "uoa-profile-fixture.mjs")], {
+    env: { ...process.env, FIXTURE_PORT: String(uoaPort) }, stdio: "ignore",
+  });
+
   // Start server on a random port.
   const port = await getFreePort();
   const baseURL = `http://localhost:${port}`;
@@ -63,7 +69,8 @@ async function globalSetup(config: FullConfig) {
         LOG_LEVEL: "warn",
         INTERNAL_SESSION_SECRET: "e2e-test-secret-that-is-long-enough",
         UOA_SHARED_SECRET: "e2e-uoa-secret",
-        UOA_BASE_URL: "http://localhost:0",
+        UOA_BASE_URL: `http://127.0.0.1:${uoaPort}`,
+        UOA_CONFIG_URL: "",
         UOA_DOMAIN: "localhost",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -98,6 +105,7 @@ async function globalSetup(config: FullConfig) {
 
   if (!ready) {
     serverProcess.kill();
+    uoaProcess.kill();
     const msg = [
       "Server failed to start within 15s",
       `stdout: ${serverStdout}`,
@@ -109,6 +117,7 @@ async function globalSetup(config: FullConfig) {
   // Persist state for teardown and tests.
   const state = {
     pid: serverProcess.pid,
+    uoaPid: uoaProcess.pid,
     port,
     baseURL,
     dbName,

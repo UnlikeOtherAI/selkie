@@ -61,7 +61,14 @@ export function DebugSessionButton({ mode }: { mode: "export" | "import" }) {
           : "Could not validate the session. Try again.");
       }
       if (attempt.current !== currentAttempt || !dialog.current?.open) return;
-      setToken(data.token);
+      const migrated = await fetch("/api/v1/auth/session", {
+        headers: { Authorization: `Bearer ${data.token}` },
+        cache: "no-store", credentials: "omit", redirect: "error",
+      });
+      if (!migrated.ok) throw new Error("Could not validate the session. Try again.");
+      const reference = await migrated.json() as { token: string };
+      if (attempt.current !== currentAttempt || !dialog.current?.open) return;
+      setToken(reference.token);
       clear();
       dialog.current.close();
       window.location.replace("/admin");

@@ -25,6 +25,7 @@ import (
 	"github.com/unlikeotherai/selkie/internal/auth"
 	"github.com/unlikeotherai/selkie/internal/config"
 	"github.com/unlikeotherai/selkie/internal/devices"
+	"github.com/unlikeotherai/selkie/internal/direct"
 	"github.com/unlikeotherai/selkie/internal/mobile"
 	"github.com/unlikeotherai/selkie/internal/nat"
 	"github.com/unlikeotherai/selkie/internal/overlay"
@@ -256,6 +257,7 @@ func runServe(sigCtx context.Context, forceShutdown <-chan struct{}, cfg config.
 	devices.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
 	mobile.New(db, logger, cfg, overlayAlloc, auditor, hub, limiter).Mount(r)
 	services.New(db, logger, cfg, auditor, limiter).Mount(r)
+	direct.New(db, cfg, auditor, limiter).Mount(r)
 	sessions.New(db, rdb, logger, cfg, policyEngine, limiter, auditor).Mount(r)
 
 	srv := &http.Server{

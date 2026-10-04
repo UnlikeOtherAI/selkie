@@ -16,10 +16,12 @@
 		32E66BC520CD14D2967B018F /* UOAAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DAED1ABC26C5F17FFD78EEB /* UOAAuthSession.swift */; };
 		40A1F981746DB19270749C69 /* TunnelManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9068CA5CFE817ADD9F36C719 /* TunnelManagerTests.swift */; };
 		411879D968FE8FDFD9E1CD2B /* AppProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8BA0AECF58BBB1BD081D7B4 /* AppProtocols.swift */; };
+		4510C2820971FBA7089DD535 /* SelkieControlSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */; };
 		49AD82212CD90EA800C813C3 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95E7115A8DF0528A75583993 /* LoginView.swift */; };
 		4B0622422EF695BEE4949BDA /* SelkieAppRevealBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7FCCCB373881F293986794 /* SelkieAppRevealBridge.swift */; };
 		4DFE55FD4D1193FDB1DA0E40 /* WireGuardConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A76420598808D2CE58E1F734 /* WireGuardConfig.swift */; };
 		4F8ADD0D19E8387059BAA90F /* TunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4AC4972C3DA50425F61D278 /* TunnelManager.swift */; };
+		5611EDD6F59E071DDFA4CD49 /* SelkieVPNConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */; };
 		6215D130F232F781E921831A /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94439235779C7BA86B3585BB /* AppConfig.swift */; };
 		649559EF8030D69DC6BFE867 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EA020A5C85DAB8B69443639B /* NetworkExtension.framework */; };
 		6647A86F05639BE10A2D0EB8 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4E9350AD04BAC19FB6F306 /* PacketTunnelProvider.swift */; };
@@ -28,11 +30,13 @@
 		7AAE5986689030F7D9F784FB /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B67ED07F035F173E12783046 /* LaunchScreen.storyboard */; };
 		813941144C3356770761443A /* TunnelMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 674C1E123EC35F1BE1AFD58A /* TunnelMessage.swift */; };
 		850921FA8C2A526D7A6E7377 /* AuthAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A13BE4D17349F5D90FE823 /* AuthAPI.swift */; };
+		872356ED890AB5CF35FA9721 /* SelkieVPNConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */; };
 		88BA26BA4BD5E0AAD5011D0A /* AppRevealBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46A99BD985E2156D3A5830BD /* AppRevealBootstrap.swift */; };
 		94FE6E1D764255F9FA676B50 /* WireGuardTunnelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9233ABFB57DE334E13714FA /* WireGuardTunnelConfiguration.swift */; };
 		984919F384EB4A2A85A9E46C /* WireGuardKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA2650ADF710022F13689F8F /* WireGuardKey.swift */; };
 		9FC99443FBD7FF7BB1D4FA20 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE12460A4BA3C92FBC1DD18 /* SessionStore.swift */; };
 		A59D3B4547D129E038697234 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B78A062779129314768B56AB /* Security.framework */; };
+		A809BAB2071C263480ED417E /* SelkieControlSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */; };
 		AE7520BFFEBB4617C1E1ECE9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 64AF3E91A8B5C50B4B2B1C6D /* Assets.xcassets */; };
 		B2060CFC23BE93BBFF51CF34 /* SelkieTunnelExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 2B9D617FEE7CD5BB1861F413 /* SelkieTunnelExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B2F6B051284E53A1ACA3B119 /* CertificatePinning.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B3A3E82BE6690676F44B0D /* CertificatePinning.swift */; };
@@ -84,11 +88,12 @@
 
 /* Begin PBXFileReference section */
 		0F168384162A1C00BA2BFA80 /* AuthenticationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AuthenticationServices.framework; path = System/Library/Frameworks/AuthenticationServices.framework; sourceTree = SDKROOT; };
+		17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelkieControlSessionDelegate.swift; sourceTree = "<group>"; };
 		2A917A9CD58832758B169225 /* Selkie.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Selkie.entitlements; sourceTree = "<group>"; };
 		2B9D617FEE7CD5BB1861F413 /* SelkieTunnelExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = SelkieTunnelExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		2F16C326A66EA58937193793 /* AppStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateMachine.swift; sourceTree = "<group>"; };
+		36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelkieVPNConnector.swift; sourceTree = "<group>"; };
 		36BD50D745A5ECE8A75410C3 /* SelkieTunnelExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SelkieTunnelExtension.entitlements; sourceTree = "<group>"; };
-		388240F40A5940BEEE1909F9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		3DF1F0622DC0053F985A2247 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		46A99BD985E2156D3A5830BD /* AppRevealBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRevealBootstrap.swift; sourceTree = "<group>"; };
 		562FB125A40AA9EE02B85057 /* AppStateMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateMachineTests.swift; sourceTree = "<group>"; };
@@ -100,7 +105,6 @@
 		6DAED1ABC26C5F17FFD78EEB /* UOAAuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UOAAuthSession.swift; sourceTree = "<group>"; };
 		6DC62C91FD3719FF0334E25C /* WireGuardKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WireGuardKit; path = Vendor/WireGuardKit; sourceTree = SOURCE_ROOT; };
 		84B3A3E82BE6690676F44B0D /* CertificatePinning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CertificatePinning.swift; sourceTree = "<group>"; };
-		85EF6BAF285803E8F3BB1545 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8BE12460A4BA3C92FBC1DD18 /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		8D4E9350AD04BAC19FB6F306 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		9068CA5CFE817ADD9F36C719 /* TunnelManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelManagerTests.swift; sourceTree = "<group>"; };
@@ -167,6 +171,8 @@
 		20A39602DD6C509D0651F94D /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */,
+				36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */,
 				674C1E123EC35F1BE1AFD58A /* TunnelMessage.swift */,
 				A76420598808D2CE58E1F734 /* WireGuardConfig.swift */,
 			);
@@ -177,7 +183,6 @@
 			isa = PBXGroup;
 			children = (
 				64AF3E91A8B5C50B4B2B1C6D /* Assets.xcassets */,
-				388240F40A5940BEEE1909F9 /* Info.plist */,
 				2A917A9CD58832758B169225 /* Selkie.entitlements */,
 				C303E6D95117E99D20212526 /* SelkieApp.swift */,
 				BE2C417B8849ED3148BD4B6D /* API */,
@@ -224,7 +229,6 @@
 		352BCC487673800F0341A44C /* SelkieTunnelExtension */ = {
 			isa = PBXGroup;
 			children = (
-				85EF6BAF285803E8F3BB1545 /* Info.plist */,
 				8D4E9350AD04BAC19FB6F306 /* PacketTunnelProvider.swift */,
 				36BD50D745A5ECE8A75410C3 /* SelkieTunnelExtension.entitlements */,
 				E9233ABFB57DE334E13714FA /* WireGuardTunnelConfiguration.swift */,
@@ -516,6 +520,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				6647A86F05639BE10A2D0EB8 /* PacketTunnelProvider.swift in Sources */,
+				4510C2820971FBA7089DD535 /* SelkieControlSessionDelegate.swift in Sources */,
+				5611EDD6F59E071DDFA4CD49 /* SelkieVPNConnector.swift in Sources */,
 				13356B0463FAE614E4522980 /* TunnelMessage.swift in Sources */,
 				CC56D34E2A1964F1A9C179A3 /* WireGuardConfig.swift in Sources */,
 				94FE6E1D764255F9FA676B50 /* WireGuardTunnelConfiguration.swift in Sources */,
@@ -550,6 +556,8 @@
 				EB1C290B51BE60BF3CEA746F /* MobileAPI.swift in Sources */,
 				77D7B2113D6F9BEDED1A6E36 /* SelkieApp.swift in Sources */,
 				4B0622422EF695BEE4949BDA /* SelkieAppRevealBridge.swift in Sources */,
+				A809BAB2071C263480ED417E /* SelkieControlSessionDelegate.swift in Sources */,
+				872356ED890AB5CF35FA9721 /* SelkieVPNConnector.swift in Sources */,
 				C96F900C058C2675E59C490B /* ServerListView.swift in Sources */,
 				1B2B0D696D15F4193C6E641C /* ServerRow.swift in Sources */,
 				EE278F062F1EB471FF7857E1 /* ServerService.swift in Sources */,
@@ -754,7 +762,6 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -819,7 +826,6 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

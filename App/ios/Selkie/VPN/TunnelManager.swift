@@ -17,6 +17,16 @@ final class TunnelManager: TunnelManaging {
     private typealias ManagersContinuation = CheckedContinuation<[NETunnelProviderManager], Error>
 
     private var manager: NETunnelProviderManager?
+    private var directToken: String?
+    private var directPeerURL: String?
+
+    func configureDirectSession(token: String, deviceID: UUID) {
+        directToken = token
+        var url = URLComponents(url: AppConfig.apiBaseURL, resolvingAgainstBaseURL: false)!
+        url.scheme = "wss"
+        url.path = "/api/v1/direct/\(deviceID.uuidString)/peers"
+        directPeerURL = url.url?.absoluteString
+    }
 
     func currentStatus() async throws -> NEVPNStatus {
         let manager = try await loadManager()
@@ -46,7 +56,12 @@ final class TunnelManager: TunnelManaging {
         let providerProtocol = NETunnelProviderProtocol()
         providerProtocol.providerBundleIdentifier = AppConfig.tunnelExtensionBundleIdentifier
         providerProtocol.serverAddress = parsedConfig.remoteAddress
-        providerProtocol.providerConfiguration = ["wgConfig": wgConfig]
+        var values: [String: Any] = ["wgConfig": wgConfig]
+        if let token = directToken, let url = directPeerURL {
+            values["directToken"] = token
+            values["directPeerURL"] = url
+        }
+        providerProtocol.providerConfiguration = values
 
         manager.localizedDescription = "Selkie"
         manager.protocolConfiguration = providerProtocol
@@ -69,6 +84,11 @@ final class TunnelManager: TunnelManaging {
     ///
     /// Pure and side-effect free so it can be unit-tested without a tunnel host.
     nonisolated static func onDemandRules() -> [NEOnDemandRule] {
+        #if os(tvOS)
+        let rule = NEOnDemandRuleConnect()
+        rule.interfaceTypeMatch = .any
+        return [rule]
+        #else
         let wifiRule = NEOnDemandRuleConnect()
         wifiRule.interfaceTypeMatch = .wiFi
 
@@ -76,6 +96,7 @@ final class TunnelManager: TunnelManaging {
         cellularRule.interfaceTypeMatch = .cellular
 
         return [wifiRule, cellularRule]
+        #endif
     }
 
     func stop() async throws {

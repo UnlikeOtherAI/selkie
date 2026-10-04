@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-
 import {
   getToken,
   setToken,
+  removeToken,
   parseJWT,
   isTokenValid,
   extractTokenFromHash,
@@ -27,26 +28,41 @@ function RequireAuth({ children, claims }: { children: React.ReactNode; claims: 
 
 export function App() {
   const [claims, setClaims] = useState<JWTClaims | null>(null);
+  const [tokenForExchange] = useState(() => extractTokenFromHash() ?? getToken());
   const [checked, setChecked] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    // Extract token from hash (OAuth callback redirect).
-    const hashToken = extractTokenFromHash();
-    if (hashToken) {
-      setToken(hashToken);
-    }
-
-    const stored = getToken();
-    if (stored && isTokenValid(stored)) {
-      setClaims(parseJWT(stored));
-      // If on login page with valid token, redirect to admin.
-      if (location.pathname === "/login") {
-        navigate("/admin", { replace: true });
+    const stored = tokenForExchange;
+    if (stored && !isTokenValid(stored)) removeToken();
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        if (stored && isTokenValid(stored)) {
+          // Old profile-bearing JWTs must leave persistent storage before exchange.
+          const oldClaims = parseJWT(stored) as Record<string, unknown> | null;
+          if (oldClaims && ["email", "display_name", "picture"].some((key) => key in oldClaims)) {
+            removeToken();
+          }
+          const response = await fetch("/api/v1/auth/session", {
+            headers: { Authorization: `Bearer ${stored}` },
+            credentials: "omit", redirect: "error", signal: controller.signal,
+          });
+          if (!response.ok) { removeToken(); return; }
+          const session = await response.json() as { token: string };
+          if (controller.signal.aborted) return;
+          setToken(session.token);
+          setClaims(parseJWT(session.token));
+          if (location.pathname === "/login") navigate("/admin", { replace: true });
+        }
+      } catch {
+        // A failed exchange never restores a copied profile-bearing session.
+      } finally {
+        if (!controller.signal.aborted) setChecked(true);
       }
-    }
-    setChecked(true);
+    })();
+    return () => controller.abort();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!checked) return null;

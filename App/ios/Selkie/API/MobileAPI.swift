@@ -6,11 +6,16 @@ struct DeviceTelemetry {
 
     static func current() -> DeviceTelemetry {
         let homeDirectory = URL(fileURLWithPath: NSHomeDirectory())
+        #if os(tvOS)
+        let diskFreeBytes = (try? homeDirectory.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?
+            .volumeAvailableCapacity.map(Int64.init)
+        #else
         let values = try? homeDirectory.resourceValues(
             forKeys: [.volumeAvailableCapacityForImportantUsageKey]
         )
         let diskFreeBytes = values?.volumeAvailableCapacityForImportantUsage
             .flatMap(Int64.init)
+        #endif
         return DeviceTelemetry(diskFreeBytes: diskFreeBytes)
     }
 }
@@ -25,8 +30,8 @@ final class MobileAPI: MobileAPIProtocol {
     func enroll(token: String, publicKey: String) async throws -> MobileEnrollResponse {
         let hostname = await MainActor.run { UIDevice.current.name }
         let request = MobileEnrollRequest(
-            hostname: hostname,
-            osPlatform: "ios",
+            hostname: AppConfig.enrollmentHostname(hostname),
+            osPlatform: AppConfig.osPlatform,
             osArch: AppConfig.currentArchitecture,
             appVersion: AppConfig.appVersion,
             wgPublicKey: publicKey

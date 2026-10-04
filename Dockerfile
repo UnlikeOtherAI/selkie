@@ -14,7 +14,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /selkie-server ./cmd/control-server
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /selkie-server ./cmd/control-server \
+    && CGO_ENABLED=0 go build -ldflags="-s -w" -o /selkie-home-bootstrap ./cmd/home-bootstrap
 
 FROM alpine:3.20
 
@@ -30,6 +31,7 @@ RUN setcap cap_net_admin+eip /sbin/ip \
        done
 
 COPY --from=server-build /selkie-server /usr/local/bin/selkie-server
+COPY --from=server-build /selkie-home-bootstrap /usr/local/bin/selkie-home-bootstrap
 COPY --from=admin-build /src/admin-ui/dist /app/admin-ui/dist
 COPY migrations /app/migrations
 COPY assets /app/assets

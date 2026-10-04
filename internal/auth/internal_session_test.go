@@ -97,8 +97,6 @@ func TestInternalMintSession_MissingFields(t *testing.T) {
 	for _, body := range []string{
 		`{"email":"a@example.com"}`,
 		`{"uoaSub":"  ","email":"a@example.com"}`,
-		`{"uoaSub":"sub-1"}`,
-		`{"uoaSub":"sub-1","email":"  "}`,
 	} {
 		rec := postMintSession(t, h, "Bearer "+testServiceKey, body)
 		if rec.Code != http.StatusBadRequest {

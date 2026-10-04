@@ -14,7 +14,15 @@ enum WireGuardConfigError: LocalizedError {
     }
 }
 
-struct WireGuardConfig {
+public struct WireGuardConfig {
+    struct Peer {
+        let publicKey: String?
+        let presharedKey: String?
+        let allowedIPs: [CIDRAddress]
+        let endpoint: String?
+        let persistentKeepalive: Int?
+    }
+    let peers: [Peer]
     static let defaultRelayHost = "relay.selkie.live"
 
     let original: String
@@ -42,6 +50,13 @@ struct WireGuardConfig {
 
         var state = ParseState()
         var section = ""
+        var peerState = ParseState()
+        var parsedPeers: [Peer] = []
+        func peer(from state: ParseState) -> Peer {
+            Peer(publicKey: state.peerPublicKey, presharedKey: state.presharedKey,
+                 allowedIPs: state.allowedIPs, endpoint: state.endpoint,
+                 persistentKeepalive: state.persistentKeepalive)
+        }
 
         for rawLine in configString.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -50,6 +65,8 @@ struct WireGuardConfig {
             }
 
             if let nextSection = Self.sectionName(from: line) {
+                if section == "[peer]" { parsedPeers.append(peer(from: peerState)) }
+                peerState = ParseState()
                 section = nextSection
                 continue
             }
@@ -59,12 +76,15 @@ struct WireGuardConfig {
             }
 
             try state.apply(entry: entry, in: section)
+            if section == "[peer]" { try peerState.apply(entry: entry, in: section) }
         }
 
         guard !state.interfaceAddresses.isEmpty else {
             throw WireGuardConfigError.missingInterfaceAddress
         }
 
+        if section == "[peer]" { parsedPeers.append(peer(from: peerState)) }
+        peers = parsedPeers
         interfaceAddresses = state.interfaceAddresses
         dnsServers = state.dnsServers
         allowedIPs = state.allowedIPs

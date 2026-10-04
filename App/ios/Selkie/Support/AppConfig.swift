@@ -5,7 +5,13 @@ enum AppConfig {
     static let uoaBaseURL = URL(string: "https://authentication.unlikeotherai.com")!
     static let callbackScheme = "selkie"
     static let callbackHost = "auth"
+    #if os(tvOS)
+    static let osPlatform = "tvos"
+    static let tunnelExtensionBundleIdentifier = "com.unlikeotherai.selkie.tvos.tunnel"
+    #else
+    static let osPlatform = "ios"
     static let tunnelExtensionBundleIdentifier = "com.unlikeotherai.selkie.ios.tunnel"
+    #endif
     static let appVersion = "0.1.0"
     static let relayHost = "relay.selkie.live"
 
@@ -17,6 +23,15 @@ enum AppConfig {
             "g2JP0zjI2bAjwYpny3qcBRnaQ9EXdbTGy9rUXD2ZfFI="
         ]
     ]
+
+    static func enrollmentHostname(_ name: String) -> String {
+        let value = name.lowercased().unicodeScalars.map { scalar -> String in
+            CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789").contains(scalar)
+                ? String(scalar) : "-"
+        }.joined().split(separator: "-").joined(separator: "-")
+        let hostname = String(value.prefix(63)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return hostname.isEmpty ? "selkie-device" : hostname
+    }
 
     static var currentArchitecture: String {
         #if arch(arm64)
