@@ -19,14 +19,20 @@ public enum SelkieVPNError: LocalizedError {
 @MainActor
 public final class SelkieVPNConnector {
     private var manager: NETunnelProviderManager?
+    private var enrolledDeviceID: String?
     public private(set) var isConnected = false
     public init() {}
 
     public func connect(token: String, apiBaseURL: URL, hostname: String,
-                        platform: String, extensionBundleIdentifier: String) async throws {
+                        platform: String, extensionBundleIdentifier: String,
+                        identityNamespace: String? = nil) async throws {
         guard apiBaseURL.scheme == "https", apiBaseURL.host != nil,
               ["ios", "tvos"].contains(platform) else { throw SelkieVPNError.unavailable }
-        let key = try deviceKey(namespace: extensionBundleIdentifier)
+        let identityHash = identityNamespace.map { value in
+            SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+        let namespace = extensionBundleIdentifier + (identityHash.map { "." + $0 } ?? "")
+        let key = try deviceKey(namespace: namespace)
         let rawName = hostname.lowercased().unicodeScalars.map { scalar -> String in
             CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789").contains(scalar)
                 ? String(scalar) : "-"
@@ -56,6 +62,7 @@ public final class SelkieVPNConnector {
               let config = value["wg_config"] as? String,
               let id = value["device_id"] as? String else { throw SelkieVPNError.unavailable }
         let parsed = try WireGuardConfig(configString: config)
+        enrolledDeviceID = id
         let effective = parsed.settingPrivateKey(key.rawRepresentation.base64EncodedString())
         let managers = try await loadManagers()
         let selected = managers.first { ($0.protocolConfiguration as? NETunnelProviderProtocol)?
@@ -67,7 +74,7 @@ public final class SelkieVPNConnector {
         socketURL.scheme = "wss"
         socketURL.path = "/api/v1/direct/\(id)/peers"
         vpn.providerConfiguration = ["wgConfig": effective, "directToken": token,
-                                     "directPeerURL": socketURL.url!.absoluteString]
+                                     "directPeerURL": socketURL.url!.absoluteString, "directDeviceID": id]
         selected.protocolConfiguration = vpn
         selected.localizedDescription = "Rafiki home connection"
         selected.isEnabled = true
@@ -92,8 +99,8 @@ public final class SelkieVPNConnector {
 
     public func renewAuthorization(token: String) async throws {
         guard let session = manager?.connection as? NETunnelProviderSession,
-              session.status == .connected else { throw SelkieVPNError.unavailable }
-        let payload = try JSONSerialization.data(withJSONObject: ["directToken": token])
+              session.status == .connected, let deviceID = enrolledDeviceID else { throw SelkieVPNError.unavailable }
+        let payload = try JSONSerialization.data(withJSONObject: ["directToken": token, "directDeviceID": deviceID])
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             do {
                 try session.sendProviderMessage(payload) { response in

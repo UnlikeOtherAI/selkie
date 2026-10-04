@@ -14,18 +14,20 @@ import (
 )
 
 type Peer struct {
-	DeviceID    string `json:"device_id"`
-	PublicKey   string `json:"public_key"`
-	OverlayIP   string `json:"overlay_ip"`
-	Endpoint    string `json:"endpoint,omitempty"`
-	ServicePort int    `json:"service_port,omitempty"`
+	ValidUntil  *time.Time `json:"valid_until,omitempty"`
+	DeviceID    string     `json:"device_id"`
+	PublicKey   string     `json:"public_key"`
+	OverlayIP   string     `json:"overlay_ip"`
+	Endpoint    string     `json:"endpoint,omitempty"`
+	ServicePort int        `json:"service_port,omitempty"`
 }
 
 type Snapshot struct {
-	NextExpiry time.Time `json:"-"`
-	OverlayIP  string    `json:"overlay_ip"`
-	Peers      []Peer    `json:"peers"`
-	WGConfig   string    `json:"wg_config"`
+	AuthorizationExpiresAt string    `json:"authorization_expires_at"`
+	NextExpiry             time.Time `json:"-"`
+	OverlayIP              string    `json:"overlay_ip"`
+	Peers                  []Peer    `json:"peers"`
+	WGConfig               string    `json:"wg_config"`
 }
 
 func ValidateEndpoint(endpoint string) error {

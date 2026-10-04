@@ -275,6 +275,12 @@ func (h *Handler) enrollMobileDevice(ctx context.Context, userID string, req enr
 		return "", nil, commitErr
 	}
 	if h.hub != nil {
+		if req.DirectScoped {
+			if syncErr := h.hub.SyncAll(ctx); syncErr != nil {
+				return "", nil, syncErr
+			}
+			return deviceID, overlayIP, nil
+		}
 		if syncErr := h.hub.SyncDevice(ctx, deviceID); syncErr != nil {
 			h.logger.Error("sync mobile wireguard peer", zap.Error(syncErr), zap.String("device_id", deviceID))
 		}
@@ -305,9 +311,9 @@ func upsertMobileDevice(ctx context.Context, tx pgx.Tx, userID string, req enrol
 	err := tx.QueryRow(ctx, `
 SELECT id, host(overlay_ip)
 FROM devices
-WHERE owner_user_id = $1 AND hostname = $2 AND os_platform IN ('ios','android','tvos')
+WHERE owner_user_id = $1 AND hostname = $2 AND os_platform IN ('ios','android','tvos') AND direct_scoped=$3
 LIMIT 1
-`, userID, req.Hostname).Scan(&deviceID, &overlayIP)
+`, userID, req.Hostname, req.DirectScoped).Scan(&deviceID, &overlayIP)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", nil, err
 	}
@@ -339,10 +345,11 @@ INSERT INTO devices (
     disk_total_bytes,
     disk_free_bytes,
     last_seen_at,
-    updated_at
-) VALUES ($1, $2, 'active', $3, $4, $5, $6, '', '', '', 1, 0, 0, 0, now(), now())
+    updated_at,
+    direct_scoped
+) VALUES ($1, $2, 'active', $3, $4, $5, $6, '', '', '', 1, 0, 0, 0, now(), now(), $7)
 RETURNING id, host(overlay_ip)
-`, userID, req.Hostname, string(credentialHash), req.AppVersion, req.OSPlatform, req.OSArch).Scan(&deviceID, &overlayIP)
+`, userID, req.Hostname, string(credentialHash), req.AppVersion, req.OSPlatform, req.OSArch, req.DirectScoped).Scan(&deviceID, &overlayIP)
 		return deviceID, overlayIP, err
 	}
 
@@ -353,13 +360,14 @@ SET status = 'active',
     agent_version = $3,
     os_platform = $4,
     os_arch = $5,
+    direct_scoped = $6,
     last_seen_at = now(),
     updated_at = now(),
     revoked_at = NULL,
     overlay_ip_reclaim_after = NULL
 WHERE id = $1
 RETURNING host(overlay_ip)
-`, deviceID, req.Hostname, req.AppVersion, req.OSPlatform, req.OSArch).Scan(&overlayIP)
+`, deviceID, req.Hostname, req.AppVersion, req.OSPlatform, req.OSArch, req.DirectScoped).Scan(&overlayIP)
 	return deviceID, overlayIP, err
 }
 

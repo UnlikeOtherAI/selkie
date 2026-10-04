@@ -144,6 +144,7 @@ FROM devices d
 JOIN device_keys dk ON dk.device_id = d.id AND dk.state = 'active'
 WHERE d.id = $1
   AND d.status = 'active'
+  AND NOT d.direct_scoped
   AND d.overlay_ip IS NOT NULL
 `
 
@@ -175,6 +176,7 @@ SELECT d.id,
 FROM devices d
 JOIN device_keys dk ON dk.device_id = d.id AND dk.state = 'active'
 WHERE d.status = 'active'
+  AND NOT d.direct_scoped
   AND d.overlay_ip IS NOT NULL
 ORDER BY d.created_at ASC
 `

@@ -116,6 +116,30 @@ func TestDirectEncryptedServiceAndRevocation(t *testing.T) {
 	if string(received) != string(payload) {
 		t.Fatal("direct bytes changed")
 	}
+	// Lease renewal and an unrelated peer arriving retain this TCP stream.
+	expires := time.Now().Add(3 * time.Second)
+	_, thirdPublic := keyPair(t)
+	renewedPeers := []direct.Peer{{PublicKey: mobilePublic, OverlayIP: "10.100.2.3", ValidUntil: &expires}, {PublicKey: thirdPublic, OverlayIP: "10.100.2.4"}}
+	if applyErr := home.Apply(direct.Snapshot{OverlayIP: "10.100.2.2", Peers: renewedPeers}); applyErr != nil {
+		t.Fatal(applyErr)
+	}
+	if _, writeErr := remote.Write(payload); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if _, readErr := io.ReadFull(remote, received); readErr != nil {
+		t.Fatalf("renewal interrupted TCP: %v", readErr)
+	}
+	// With no further control messages, the local lease timer removes the key.
+	expires = time.Now().Add(300 * time.Millisecond)
+	renewedPeers[0].ValidUntil = &expires
+	if applyErr := home.Apply(direct.Snapshot{OverlayIP: "10.100.2.2", Peers: renewedPeers}); applyErr != nil {
+		t.Fatal(applyErr)
+	}
+	time.Sleep(400 * time.Millisecond)
+	_, _ = remote.Write(payload)
+	if _, readErr := remote.Read(received); readErr == nil {
+		t.Fatal("blackholed control socket allowed expired peer")
+	}
 	if err := home.Apply(direct.Snapshot{OverlayIP: "10.100.2.2", Peers: []direct.Peer{}}); err != nil {
 		t.Fatal(err)
 	}

@@ -121,6 +121,8 @@ jobs:
         run: go build ./...
 
       - name: go test
+        env:
+          SELKIE_DIRECT_TEST_DATABASE_URL: postgres://selkie:testpass@127.0.0.1:5432/selkie_test?sslmode=disable
         run: go test -race -count=1 ./...
 
   web:

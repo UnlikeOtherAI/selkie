@@ -71,7 +71,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Claims) (Snapshot, error) {
 	var ip, platform string
 	var port *int
-	err := h.db.Pool.QueryRow(ctx, `SELECT host(d.overlay_ip),d.os_platform,d.direct_home_port FROM devices d JOIN device_keys k ON k.device_id=d.id AND k.state='active' WHERE d.id=$1 AND d.owner_user_id=$2 AND d.status='active' AND d.overlay_ip IS NOT NULL`, deviceID, claims.Sub).Scan(&ip, &platform, &port)
+	err := h.db.Pool.QueryRow(ctx, `SELECT host(d.overlay_ip),d.os_platform,d.direct_home_port FROM devices d JOIN device_keys k ON k.device_id=d.id AND k.state='active' WHERE d.id=$1 AND d.owner_user_id=$2 AND d.status='active' AND d.overlay_ip IS NOT NULL AND ($3='' OR d.direct_scoped)`, deviceID, claims.Sub, claims.DirectHomeID).Scan(&ip, &platform, &port)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -95,7 +95,7 @@ func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Cla
 		return Snapshot{}, err
 	}
 	defer rows.Close()
-	result := Snapshot{OverlayIP: ip, Peers: make([]Peer, 0)}
+	result := Snapshot{OverlayIP: ip, Peers: make([]Peer, 0), AuthorizationExpiresAt: claims.ExpiresAt.UTC().Format(time.RFC3339)}
 	for rows.Next() {
 		var peer Peer
 		var host string
@@ -112,6 +112,7 @@ func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Cla
 				continue
 			}
 		}
+		peer.ValidUntil = expiresAt
 		if expiresAt != nil && (result.NextExpiry.IsZero() || expiresAt.Before(result.NextExpiry)) {
 			result.NextExpiry = *expiresAt
 		}

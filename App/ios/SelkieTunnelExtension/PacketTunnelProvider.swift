@@ -27,7 +27,11 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
     private var controlSession: URLSession?
     private var directPrivateKey: String?
     private var directPeerURL: URL?
+    private var directDeviceID: String?
+    private var expiryTimer: DispatchSourceTimer?
+    private var pingTimer: DispatchSourceTimer?
     private var directGeneration = UUID()
+    private var authorizationGeneration = UUID()
     private var currentDirectConfig: String?
 
     private let logger = Logger(
@@ -68,6 +72,7 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
            let privateKey = parsed.privateKey {
             directPrivateKey = privateKey
             directPeerURL = url
+            directDeviceID = values["directDeviceID"] as? String ?? url.pathComponents.dropLast().last
             startDirectPeers(url: url, token: token, completion: completionHandler)
             return
         }
@@ -107,6 +112,8 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
+        expiryTimer?.cancel()
+        pingTimer?.cancel()
         peerTask?.cancel()
         peerSocket?.cancel(with: .goingAway, reason: nil)
         controlSession?.invalidateAndCancel()
@@ -134,7 +141,7 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: ((Data?) -> Void)?
     ) {
         if let values = try? JSONSerialization.jsonObject(with: messageData) as? [String: String],
-           let token = values["directToken"], let url = directPeerURL {
+           let token = values["directToken"], values["directDeviceID"] == directDeviceID, let url = directPeerURL {
             startDirectPeers(url: url, token: token, alreadyStarted: true) { error in
                 completionHandler?(error == nil ? Data("ok".utf8) : nil)
             }
@@ -191,6 +198,7 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
         peerSocket = socket
         socket.maximumMessageSize = 1 << 20
         socket.resume()
+        startLivenessTimer(socket: socket, generation: generation)
         peerTask = Task { [weak self] in
             guard let self else { return }
             var started = alreadyStarted
@@ -198,16 +206,17 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
             do {
                 while !Task.isCancelled {
                     let message = try await socket.receive()
+                    guard self.directGeneration == generation else { return }
                     let data = try Self.messageData(message)
                     let snapshot = try JSONDecoder().decode(DirectSnapshot.self, from: data)
+                    guard let expiresAt = ISO8601DateFormatter().date(from: snapshot.authorizationExpiresAt),
+                          expiresAt > Date() else { throw PacketTunnelProviderError.invalidTunnelConfig }
+                    self.setExpiry(expiresAt)
                     let parsed = try WireGuardConfig(configString: snapshot.wgConfig)
                     let effective = try WireGuardConfig(configString:
                         parsed.settingPrivateKey(self.directPrivateKey ?? ""))
                     let config = try TunnelConfiguration(from: effective, name: "Selkie direct home")
-                    // A direct snapshot never includes the server hub or a blanket route.
-                    guard config.peers.allSatisfy({ peer in
-                        !peer.allowedIPs.isEmpty && peer.allowedIPs.allSatisfy { $0.networkPrefixLength == 32 }
-                    }) else { throw PacketTunnelProviderError.invalidTunnelConfig }
+                    try Self.validateDirectRoutes(config)
                     if started {
                         if self.currentDirectConfig != snapshot.wgConfig {
                             try await self.updateAdapter(config)
@@ -226,6 +235,52 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
                 if !replied { completion(error) } else { self.cancelTunnelWithError(error) }
             }
         }
+    }
+
+    private func setExpiry(_ expiry: Date) {
+        let generation = UUID()
+        authorizationGeneration = generation
+        expiryTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource()
+        timer.schedule(deadline: .now() + max(0, expiry.timeIntervalSinceNow))
+        timer.setEventHandler { [weak self] in
+            guard let self, self.authorizationGeneration == generation else { return }
+            self.peerSocket?.cancel(with: .goingAway, reason: nil)
+            self.adapter.stop { _ in }
+            self.cancelTunnelWithError(SelkieVPNError.unavailable)
+        }
+        expiryTimer = timer
+        timer.resume()
+    }
+
+    private func startLivenessTimer(socket: URLSessionWebSocketTask, generation: UUID) {
+        pingTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource()
+        timer.schedule(deadline: .now() + 20, repeating: 20)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.directGeneration == generation else { return }
+            let watchdog = DispatchSource.makeTimerSource()
+            watchdog.schedule(deadline: .now() + 10)
+            watchdog.setEventHandler { [weak self] in
+                guard let self, self.directGeneration == generation else { return }
+                socket.cancel(with: .goingAway, reason: nil)
+                self.adapter.stop { _ in }
+                self.cancelTunnelWithError(SelkieVPNError.unavailable)
+            }
+            watchdog.resume()
+            socket.sendPing { error in
+                watchdog.cancel()
+                if error != nil { socket.cancel(with: .goingAway, reason: nil) }
+            }
+        }
+        pingTimer = timer
+        timer.resume()
+    }
+
+    private static func validateDirectRoutes(_ config: TunnelConfiguration) throws {
+        guard config.peers.allSatisfy({ peer in
+            !peer.allowedIPs.isEmpty && peer.allowedIPs.allSatisfy { $0.networkPrefixLength == 32 }
+        }) else { throw PacketTunnelProviderError.invalidTunnelConfig }
     }
 
     private static func messageData(_ message: URLSessionWebSocketTask.Message) throws -> Data {
@@ -305,5 +360,9 @@ final class PacketTunnelProvider: SelkiePacketTunnelProvider {}
 
 private struct DirectSnapshot: Decodable {
         let wgConfig: String
-        enum CodingKeys: String, CodingKey { case wgConfig = "wg_config" }
+    let authorizationExpiresAt: String
+        enum CodingKeys: String, CodingKey {
+            case wgConfig = "wg_config"
+            case authorizationExpiresAt = "authorization_expires_at"
+        }
     }

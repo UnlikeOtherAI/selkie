@@ -14,6 +14,7 @@ import (
 	"github.com/huin/goupnp"
 	"github.com/huin/goupnp/dcps/internetgateway2"
 	"github.com/huin/goupnp/httpu"
+	"github.com/huin/goupnp/soap"
 	"github.com/huin/goupnp/ssdp"
 )
 
@@ -126,6 +127,12 @@ func (m *Mapping) create(ctx context.Context) error {
 	internal, client, _, description, _, err := m.gateway.GetSpecificPortMappingEntryCtx(ctx, "", m.port, "UDP")
 	if err == nil && (internal != m.port || client != m.local || description != mappingDescription) {
 		return errors.New("UDP port mapping already owned by another application")
+	}
+	if err != nil {
+		var fault *soap.SOAPFaultError
+		if !errors.As(err, &fault) || fault.Detail.UPnPError.Errorcode != 714 {
+			return errors.New("cannot verify ownership of UDP mapping")
+		}
 	}
 	external, err := m.gateway.GetExternalIPAddressCtx(ctx)
 	if err != nil {

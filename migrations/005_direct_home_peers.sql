@@ -1,3 +1,6 @@
+ALTER TABLE devices DROP CONSTRAINT devices_os_platform_check;
+ALTER TABLE devices ADD CONSTRAINT devices_os_platform_check
+ CHECK (os_platform IN ('darwin','linux','windows','ios','android','tvos'));
 -- Product-specific explicit service exposure, never a copied human identity.
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS direct_scoped boolean NOT NULL DEFAULT false;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS direct_home_port integer
