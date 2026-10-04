@@ -74,7 +74,8 @@ public final class SelkieVPNConnector {
         socketURL.scheme = "wss"
         socketURL.path = "/api/v1/direct/\(id)/peers"
         vpn.providerConfiguration = ["wgConfig": effective, "directToken": token,
-                                     "directPeerURL": socketURL.url!.absoluteString, "directDeviceID": id]
+                                     "directPeerURL": socketURL.url!.absoluteString, "directDeviceID": id,
+                                     "identityFingerprint": identityHash ?? ""]
         selected.protocolConfiguration = vpn
         selected.localizedDescription = "Rafiki home connection"
         selected.isEnabled = true
@@ -95,6 +96,52 @@ public final class SelkieVPNConnector {
         }
         selected.connection.stopVPNTunnel()
         throw SelkieVPNError.unavailable
+    }
+
+    /// Adopt this account's already running extension after an app restart.
+    public func adoptExistingConnection(extensionBundleIdentifier: String,
+                                        identityNamespace: String) async throws -> Bool {
+        let fingerprint = SHA256.hash(data: Data(identityNamespace.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let key = try deviceKey(namespace: extensionBundleIdentifier + "." + fingerprint)
+        let managers = try await loadManagers()
+        if Task.isCancelled {
+            for candidate in managers {
+                if (candidate.protocolConfiguration as? NETunnelProviderProtocol)?
+                    .providerBundleIdentifier == extensionBundleIdentifier {
+                    candidate.connection.stopVPNTunnel()
+                }
+            }
+            try Task.checkCancellation()
+        }
+        for candidate in managers where candidate.connection.status == .connected {
+            guard let vpn = candidate.protocolConfiguration as? NETunnelProviderProtocol,
+                  vpn.providerBundleIdentifier == extensionBundleIdentifier else { continue }
+            let values = vpn.providerConfiguration ?? [:]
+            let parsed = (values["wgConfig"] as? String).flatMap { try? WireGuardConfig(configString: $0) }
+            let ownerMatches = parsed?.privateKey == key.rawRepresentation.base64EncodedString()
+                && (values["identityFingerprint"] == nil
+                    || values["identityFingerprint"] as? String == fingerprint)
+            if !ownerMatches { candidate.connection.stopVPNTunnel() }
+        }
+        guard let selected = managers.first(where: { candidate in
+            guard candidate.connection.status == .connected,
+                  let vpn = candidate.protocolConfiguration as? NETunnelProviderProtocol,
+                  vpn.providerBundleIdentifier == extensionBundleIdentifier,
+                  let values = vpn.providerConfiguration,
+                  values["directDeviceID"] is String,
+                  values["directToken"] is String,
+                  let config = values["wgConfig"] as? String,
+                  let parsed = try? WireGuardConfig(configString: config),
+                  parsed.privateKey == key.rawRepresentation.base64EncodedString() else { return false }
+            return values["identityFingerprint"] == nil
+                || values["identityFingerprint"] as? String == fingerprint
+        }), let vpn = selected.protocolConfiguration as? NETunnelProviderProtocol,
+              let deviceID = vpn.providerConfiguration?["directDeviceID"] as? String else { return false }
+        try Task.checkCancellation()
+        manager = selected
+        enrolledDeviceID = deviceID
+        return true
     }
 
     public func renewAuthorization(token: String) async throws {

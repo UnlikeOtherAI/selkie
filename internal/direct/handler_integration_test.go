@@ -65,16 +65,16 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 	if _, createErr := db.Pool.Exec(ctx, `CREATE TABLE schema_migrations(filename text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())`); createErr != nil {
 		t.Fatal(createErr)
 	}
-	if err := db.RunMigrations(ctx, "../../migrations"); err != nil {
-		t.Fatal(err)
+	if checkedErr0 := db.RunMigrations(ctx, "../../migrations"); checkedErr0 != nil {
+		t.Fatal(checkedErr0)
 	}
 	suffix := time.Now().Format("150405.000000000")
 	var owner, guest string
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users(external_id) VALUES($1) RETURNING id`, "direct-owner-"+suffix).Scan(&owner); err != nil {
-		t.Fatal(err)
+	if checkedErr1 := db.Pool.QueryRow(ctx, `INSERT INTO users(external_id) VALUES($1) RETURNING id`, "direct-owner-"+suffix).Scan(&owner); checkedErr1 != nil {
+		t.Fatal(checkedErr1)
 	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users(external_id) VALUES($1) RETURNING id`, "direct-guest-"+suffix).Scan(&guest); err != nil {
-		t.Fatal(err)
+	if checkedErr2 := db.Pool.QueryRow(ctx, `INSERT INTO users(external_id) VALUES($1) RETURNING id`, "direct-guest-"+suffix).Scan(&guest); checkedErr2 != nil {
+		t.Fatal(checkedErr2)
 	}
 	defer func() {
 		cleanup, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -91,11 +91,11 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 	home := insertDevice(ctx, t, db, owner, "home", "windows", network+"2", string(hash), 7)
 	otherHome := insertDevice(ctx, t, db, owner, "other-home", "windows", network+"4", string(hash), 8)
 	mobile := insertDevice(ctx, t, db, guest, "mobile", "ios", network+"3", "unused", 9)
-	if _, err := db.Pool.Exec(ctx, `UPDATE devices SET direct_home_port=8790,external_endpoint_host='31.49.158.120',external_endpoint_port=51821 WHERE id IN ($1,$2)`, home, otherHome); err != nil {
-		t.Fatal(err)
+	if _, checkedErr3 := db.Pool.Exec(ctx, `UPDATE devices SET direct_home_port=8790,external_endpoint_host='31.49.158.120',external_endpoint_port=51821 WHERE id IN ($1,$2)`, home, otherHome); checkedErr3 != nil {
+		t.Fatal(checkedErr3)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE devices SET direct_scoped=true WHERE id=$1`, mobile); err != nil {
-		t.Fatal(err)
+	if _, checkedErr4 := db.Pool.Exec(ctx, `UPDATE devices SET direct_scoped=true WHERE id=$1`, mobile); checkedErr4 != nil {
+		t.Fatal(checkedErr4)
 	}
 	secret := strings.Repeat("signed-session-secret-", 3)
 	cfg := config.Config{InternalSessionSecret: secret, WGServerPublicKey: base64.StdEncoding.EncodeToString(bytesOf(11)), WGServerEndpoint: "relay.selkie.live", WGServerPort: 51820, WGOverlayCIDR: "10.101.0.0/16"}
@@ -178,20 +178,23 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 	if forged != nil {
 		_ = forged.CloseNow()
 	}
-	if forgedResponse != nil {
+	if forgedResponse != nil && forgedResponse.Body != nil {
 		_ = forgedResponse.Body.Close()
 	}
 	if forgedErr == nil {
 		t.Fatal("scoped token granted an ordinary device")
 	}
-	homeSocket, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/home/"+home+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + credential}}})
+	homeSocket, homeSocketResponse, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/home/"+home+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + credential}}})
+	if homeSocketResponse != nil && homeSocketResponse.Body != nil {
+		_ = homeSocketResponse.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer homeSocket.CloseNow()
 	var initial direct.Snapshot
-	if err := wsjson.Read(ctx, homeSocket, &initial); err != nil {
-		t.Fatal(err)
+	if checkedErr5 := wsjson.Read(ctx, homeSocket, &initial); checkedErr5 != nil {
+		t.Fatal(checkedErr5)
 	}
 	if len(initial.Peers) != 0 {
 		t.Fatal("home exposed a guest before grant")
@@ -199,73 +202,82 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 	// A scoped token for this guest cannot read the home owner's device socket.
 	token := mintDirectToken(t, guest, home, secret, time.Now().Add(3*time.Second))
 	forbidden, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/"+home+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}}})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if forbidden != nil {
 		_ = forbidden.CloseNow()
 	}
-	if err == nil || resp == nil || resp.StatusCode != 404 {
+	if err == nil || resp == nil || resp.StatusCode != http.StatusNotFound {
 		t.Fatal("guest read another owner's source device")
 	}
-	mobileSocket, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/"+mobile+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}}})
+	mobileSocket, mobileSocketResponse, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/"+mobile+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}}})
+	if mobileSocketResponse != nil && mobileSocketResponse.Body != nil {
+		_ = mobileSocketResponse.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mobileSocket.CloseNow()
 	var snapshot direct.Snapshot
-	if err := wsjson.Read(ctx, mobileSocket, &snapshot); err != nil {
-		t.Fatal(err)
+	if checkedErr6 := wsjson.Read(ctx, mobileSocket, &snapshot); checkedErr6 != nil {
+		t.Fatal(checkedErr6)
 	}
 	if len(snapshot.Peers) != 1 || snapshot.Peers[0].DeviceID != home {
 		t.Fatalf("grant leaked other home: %+v", snapshot.Peers)
 	}
-	if err := wsjson.Read(ctx, homeSocket, &snapshot); err != nil {
-		t.Fatal(err)
+	if checkedErr7 := wsjson.Read(ctx, homeSocket, &snapshot); checkedErr7 != nil {
+		t.Fatal(checkedErr7)
 	}
 	if len(snapshot.Peers) != 1 || snapshot.Peers[0].DeviceID != mobile {
 		t.Fatal("grant was not delivered to home")
 	}
 	var count int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM direct_home_grants WHERE mobile_device_id=$1 AND home_device_id=$2`, mobile, home).Scan(&count); err != nil || count != 1 {
+	if checkedErr8 := db.Pool.QueryRow(ctx, `SELECT count(*) FROM direct_home_grants WHERE mobile_device_id=$1 AND home_device_id=$2`, mobile, home).Scan(&count); checkedErr8 != nil || count != 1 {
 		t.Fatal("grant did not persist")
 	}
 	// Exact lease expiry wakes the home socket even without a database mutation.
-	if err := wsjson.Read(ctx, homeSocket, &snapshot); err != nil {
-		t.Fatal(err)
+	if checkedErr9 := wsjson.Read(ctx, homeSocket, &snapshot); checkedErr9 != nil {
+		t.Fatal(checkedErr9)
 	}
 	if len(snapshot.Peers) != 0 {
 		t.Fatal("expired grant kept the mobile key")
 	}
 	// Reconnection renews the grant using fresh trusted authorization.
 	renewed := mintDirectToken(t, guest, home, secret, time.Now().Add(time.Minute))
-	renewedSocket, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/"+mobile+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + renewed}}})
+	renewedSocket, renewedSocketResponse, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/direct/"+mobile+"/peers", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + renewed}}})
+	if renewedSocketResponse != nil && renewedSocketResponse.Body != nil {
+		_ = renewedSocketResponse.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer renewedSocket.CloseNow()
-	if err := wsjson.Read(ctx, renewedSocket, &snapshot); err != nil {
-		t.Fatal(err)
+	if checkedErr10 := wsjson.Read(ctx, renewedSocket, &snapshot); checkedErr10 != nil {
+		t.Fatal(checkedErr10)
 	}
 	if len(snapshot.Peers) != 1 {
 		t.Fatal("renewed grant missing")
 	}
-	if err := wsjson.Read(ctx, homeSocket, &snapshot); err != nil {
-		t.Fatal(err)
+	if checkedErr11 := wsjson.Read(ctx, homeSocket, &snapshot); checkedErr11 != nil {
+		t.Fatal(checkedErr11)
 	}
 	if len(snapshot.Peers) != 1 {
 		t.Fatal("home did not restore renewed peer")
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE device_keys SET state='retired',retired_at=now() WHERE device_id=$1`, mobile); err != nil {
-		t.Fatal(err)
+	if _, checkedErr12 := db.Pool.Exec(ctx, `UPDATE device_keys SET state='retired',retired_at=now() WHERE device_id=$1`, mobile); checkedErr12 != nil {
+		t.Fatal(checkedErr12)
 	}
-	if err := wsjson.Read(ctx, homeSocket, &snapshot); err != nil {
-		t.Fatal(err)
+	if checkedErr13 := wsjson.Read(ctx, homeSocket, &snapshot); checkedErr13 != nil {
+		t.Fatal(checkedErr13)
 	}
 	if len(snapshot.Peers) != 0 {
 		t.Fatal("retired mobile key retained access")
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE devices SET status='revoked',revoked_at=now() WHERE id=$1`, home); err != nil {
-		t.Fatal(err)
+	if _, checkedErr14 := db.Pool.Exec(ctx, `UPDATE devices SET status='revoked',revoked_at=now() WHERE id=$1`, home); checkedErr14 != nil {
+		t.Fatal(checkedErr14)
 	}
-	if err := wsjson.Read(ctx, homeSocket, &snapshot); err == nil {
+	if checkedErr15 := wsjson.Read(ctx, homeSocket, &snapshot); checkedErr15 == nil {
 		t.Fatal("revoked home socket stayed authorized")
 	}
 }
@@ -278,8 +290,8 @@ func insertDevice(ctx context.Context, t *testing.T, db *store.DB, owner, name, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO device_keys(device_id,key_version,wg_public_key,state) VALUES($1,1,$2,'active')`, id, base64.StdEncoding.EncodeToString(bytesOf(keyByte))); err != nil {
-		t.Fatal(err)
+	if _, checkedErr16 := db.Pool.Exec(ctx, `INSERT INTO device_keys(device_id,key_version,wg_public_key,state) VALUES($1,1,$2,'active')`, id, base64.StdEncoding.EncodeToString(bytesOf(keyByte))); checkedErr16 != nil {
+		t.Fatal(checkedErr16)
 	}
 	return id
 }
@@ -295,5 +307,5 @@ func mintDirectToken(t *testing.T, owner, home, secret string, expiry time.Time)
 
 type hubSpy struct{ deviceSyncs int }
 
-func (h *hubSpy) SyncAll(context.Context) error            { return nil }
+func (*hubSpy) SyncAll(context.Context) error              { return nil }
 func (h *hubSpy) SyncDevice(context.Context, string) error { h.deviceSyncs++; return nil }

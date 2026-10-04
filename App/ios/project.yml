@@ -13,7 +13,6 @@ settings:
     TARGETED_DEVICE_FAMILY: 1,2
     DEVELOPMENT_TEAM: 59S95D279D
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
-    EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
 targets:
   Selkie:
     type: application
@@ -29,11 +28,9 @@ targets:
     - path: Selkie
       excludes:
       - Info.plist
-      - TVInfo.plist
     - path: Shared
       excludes:
       - Info.plist
-      - TVInfo.plist
     info:
       path: Selkie/Info.plist
       properties:
@@ -102,11 +99,9 @@ targets:
     - path: SelkieTunnelExtension
       excludes:
       - Info.plist
-      - TVInfo.plist
     - path: Shared
       excludes:
       - Info.plist
-      - TVInfo.plist
     info:
       path: SelkieTunnelExtension/Info.plist
       properties:
@@ -149,7 +144,6 @@ targets:
     - path: SelkieTests
       excludes:
       - Info.plist
-      - TVInfo.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.unlikeotherai.selkie.ios.tests
@@ -158,148 +152,6 @@ targets:
         CODE_SIGN_STYLE: Automatic
     dependencies:
     - target: Selkie
-  SelkieTV:
-    type: application
-    platform: tvOS
-    deploymentTarget: '17.0'
-    preBuildScripts:
-    - name: SwiftLint
-      script: "if ! command -v swiftlint >/dev/null 2>&1; then\n  echo \"error: swiftlint\
-        \ is required to build Selkie\"\n  exit 1\nfi\n\"$SRCROOT/scripts/lint.sh\"\
-        \n"
-      basedOnDependencyAnalysis: false
-    sources:
-    - path: Selkie
-      excludes:
-      - Devices/ServerListView.swift
-      - Devices/ServerRow.swift
-      - Auth/LoginView.swift
-      - Info.plist
-      - TVInfo.plist
-      - Resources/LaunchScreen.storyboard
-    - path: Shared
-      excludes:
-      - Info.plist
-      - TVInfo.plist
-    info:
-      path: Selkie/TVInfo.plist
-      properties:
-        CFBundleURLTypes:
-        - CFBundleURLName: com.unlikeotherai.selkie.tvos.auth
-          CFBundleURLSchemes:
-          - selkie
-        NSLocalNetworkUsageDescription: Selkie connects this Apple TV to your private
-          network.
-    entitlements:
-      path: Selkie/Selkie.entitlements
-      properties:
-        com.apple.developer.networking.networkextension:
-        - packet-tunnel-provider
-        com.apple.security.application-groups:
-        - group.com.unlikeotherai.selkie
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.unlikeotherai.selkie.tvos
-        PRODUCT_NAME: SelkieTV
-        INFOPLIST_FILE: Selkie/TVInfo.plist
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: 0.1.0
-        GENERATE_INFOPLIST_FILE: false
-        CODE_SIGN_STYLE: Automatic
-        ENABLE_TESTABILITY: true
-        TARGETED_DEVICE_FAMILY: '3'
-        TVOS_DEPLOYMENT_TARGET: '17.0'
-        EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
-        PRODUCT_MODULE_NAME: Selkie
-    dependencies:
-    - sdk: AuthenticationServices.framework
-    - sdk: CryptoKit.framework
-    - sdk: Security.framework
-    - sdk: NetworkExtension.framework
-    - sdk: UIKit.framework
-    - target: SelkieTVTunnelExtension
-      embed: true
-  SelkieTVTunnelExtension:
-    type: app-extension
-    platform: tvOS
-    deploymentTarget: '17.0'
-    preBuildScripts:
-    - name: Build WireGuard Go Bridge
-      script: '"$SRCROOT/scripts/build-wireguard-go-bridge.sh"
-
-        '
-      basedOnDependencyAnalysis: false
-    - name: SwiftLint
-      script: "if ! command -v swiftlint >/dev/null 2>&1; then\n  echo \"error: swiftlint\
-        \ is required to build SelkieTunnelExtension\"\n  exit 1\nfi\n\"$SRCROOT/scripts/lint.sh\"\
-        \n"
-      basedOnDependencyAnalysis: false
-    sources:
-    - path: SelkieTunnelExtension
-      excludes:
-      - Info.plist
-      - TVInfo.plist
-    - path: Shared
-      excludes:
-      - Info.plist
-      - TVInfo.plist
-    info:
-      path: SelkieTunnelExtension/TVInfo.plist
-      properties:
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
-    entitlements:
-      path: SelkieTunnelExtension/SelkieTunnelExtension.entitlements
-      properties:
-        com.apple.developer.networking.networkextension:
-        - packet-tunnel-provider
-        com.apple.security.application-groups:
-        - group.com.unlikeotherai.selkie
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.unlikeotherai.selkie.tvos.tunnel
-        PRODUCT_NAME: SelkieTVTunnelExtension
-        INFOPLIST_FILE: SelkieTunnelExtension/TVInfo.plist
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: 0.1.0
-        GENERATE_INFOPLIST_FILE: false
-        CODE_SIGN_STYLE: Automatic
-        SKIP_INSTALL: true
-        ENABLE_BITCODE: false
-        LIBRARY_SEARCH_PATHS:
-        - $(inherited)
-        - $(CONFIGURATION_BUILD_DIR)
-        OTHER_LDFLAGS:
-        - $(inherited)
-        - -lresolv
-        TARGETED_DEVICE_FAMILY: '3'
-        TVOS_DEPLOYMENT_TARGET: '17.0'
-        EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
-    dependencies:
-    - sdk: NetworkExtension.framework
-    - package: WireGuardKit
-      product: WireGuardKit
-  SelkieTVTests:
-    type: bundle.unit-test
-    platform: tvOS
-    deploymentTarget: '17.0'
-    sources:
-    - path: SelkieTests
-      excludes:
-      - Info.plist
-      - TVInfo.plist
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.unlikeotherai.selkie.tvos.tests
-        PRODUCT_NAME: SelkieTVTests
-        GENERATE_INFOPLIST_FILE: true
-        CODE_SIGN_STYLE: Automatic
-        TARGETED_DEVICE_FAMILY: '3'
-        TVOS_DEPLOYMENT_TARGET: '17.0'
-        EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
-    dependencies:
-    - target: SelkieTV
 schemes:
   Selkie:
     build:
@@ -309,11 +161,3 @@ schemes:
     test:
       targets:
       - SelkieTests
-  SelkieTV:
-    build:
-      targets:
-        SelkieTV: all
-        SelkieTVTunnelExtension: all
-    test:
-      targets:
-      - SelkieTVTests

@@ -43,7 +43,7 @@ type internalMintSessionRequest struct {
 //   - 503 when SELKIE_INTERNAL_SERVICE_KEY is unset (feature disabled)
 //   - 401 when the Authorization bearer key is missing or wrong
 //   - 400 on a malformed body or missing uoaSub/email
-//   - 200 with {"token": ..., "expires_at": <RFC3339>} on success
+//   - 200 with {responseTokenField: ..., "expires_at": <RFC3339>} on success
 func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *http.Request) {
 	serviceKey := strings.TrimSpace(h.cfg.InternalServiceKey)
 	if serviceKey == "" {
@@ -95,8 +95,8 @@ func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *htt
 	h.auditInternalMintSession(ctx, r, userID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token":      token,
-		"expires_at": time.Now().UTC().Add(sessionTokenTTL).Format(time.RFC3339),
+		responseTokenField: token,
+		"expires_at":       time.Now().UTC().Add(sessionTokenTTL).Format(time.RFC3339),
 	})
 }
 

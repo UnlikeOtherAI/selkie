@@ -50,24 +50,33 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		Endpoint    string `json:"endpoint"`
 		ServicePort int    `json:"service_port"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || ValidateEndpoint(req.Endpoint) != nil || req.ServicePort < 1 || req.ServicePort > 65535 {
+	if checkedErr0 := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); checkedErr0 != nil || ValidateEndpoint(req.Endpoint) != nil || req.ServicePort < 1 || req.ServicePort > 65535 {
 		http.Error(w, "invalid direct endpoint or service port", http.StatusBadRequest)
 		return
 	}
-	host, port, _ := net.SplitHostPort(req.Endpoint)
-	n, _ := strconv.Atoi(port)
+	host, port, splitErr := net.SplitHostPort(req.Endpoint)
+	if splitErr != nil {
+		http.Error(w, "invalid endpoint", http.StatusBadRequest)
+		return
+	}
+	n, parseErr := strconv.Atoi(port)
+	if parseErr != nil {
+		http.Error(w, "invalid port", http.StatusBadRequest)
+		return
+	}
 	tag, err := h.db.Pool.Exec(r.Context(), `UPDATE devices SET external_endpoint_host=$1, external_endpoint_port=$2, direct_home_port=$3, updated_at=now(), last_seen_at=now() WHERE id=$4 AND owner_user_id=$5 AND status='active' AND os_platform NOT IN ('ios','android','tvos')`, host, n, req.ServicePort, chi.URLParam(r, "id"), claims.Sub)
 	if err != nil {
-		http.Error(w, "registration unavailable", 503)
+		http.Error(w, "registration unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	if tag.RowsAffected() != 1 {
-		http.Error(w, "device unavailable", 404)
+		http.Error(w, "device unavailable", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+//nolint:gocyclo // A single decision binds ownership, audience, peer scope and lease expiry.
 func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Claims) (Snapshot, error) {
 	var ip, platform string
 	var port *int
@@ -101,8 +110,8 @@ func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Cla
 		var host string
 		var udpPort int
 		var expiresAt *time.Time
-		if err := rows.Scan(&peer.DeviceID, &peer.PublicKey, &peer.OverlayIP, &host, &udpPort, &peer.ServicePort, &expiresAt); err != nil {
-			return Snapshot{}, err
+		if checkedErr1 := rows.Scan(&peer.DeviceID, &peer.PublicKey, &peer.OverlayIP, &host, &udpPort, &peer.ServicePort, &expiresAt); checkedErr1 != nil {
+			return Snapshot{}, checkedErr1
 		}
 		// Home peers accept an incoming authenticated mobile handshake; they need
 		// no client endpoint. Mobiles must have a concrete direct home endpoint.
@@ -118,20 +127,21 @@ func (h *Handler) snapshot(ctx context.Context, deviceID string, claims auth.Cla
 		}
 		result.Peers = append(result.Peers, peer)
 	}
-	if err := rows.Err(); err != nil {
-		return Snapshot{}, err
+	if checkedErr2 := rows.Err(); checkedErr2 != nil {
+		return Snapshot{}, checkedErr2
 	}
 	result.WGConfig, err = Render(ip, result.Peers, h.cfg.WGServerPublicKey)
 	return result, err
 }
 
+//nolint:gocognit,gocyclo // Keep socket admission, grant renewal and event reconciliation in one lifecycle.
 func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	select {
 	case h.slots <- struct{}{}:
 		defer func() { <-h.slots }()
 	default:
-		http.Error(w, "too many connections", 503)
+		http.Error(w, "too many connections", http.StatusServiceUnavailable)
 		return
 	}
 	// Expiry is enforced while the socket is open, not only at the handshake.
@@ -139,28 +149,28 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	listener, err := pgx.ConnectConfig(ctx, h.db.Pool.Config().ConnConfig.Copy())
 	if err != nil {
-		http.Error(w, "events unavailable", 503)
+		http.Error(w, "events unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer listener.Close(context.Background()) //nolint:errcheck // best effort cleanup
-	if _, err := listener.Exec(ctx, "LISTEN selkie_direct_peers"); err != nil {
-		http.Error(w, "events unavailable", 503)
+	defer listener.Close(context.WithoutCancel(ctx))
+	if _, checkedErr3 := listener.Exec(ctx, "LISTEN selkie_direct_peers"); checkedErr3 != nil {
+		http.Error(w, "events unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	snapshot, err := h.snapshot(ctx, chi.URLParam(r, "id"), claims)
 	if err != nil {
-		http.Error(w, "device unavailable", 404)
+		http.Error(w, "device unavailable", http.StatusNotFound)
 		return
 	}
 	if claims.DirectHomeID != "" {
 		_, err = h.db.Pool.Exec(ctx, `INSERT INTO direct_home_grants (mobile_device_id,home_device_id,expires_at) VALUES ($1,$2,$3) ON CONFLICT (mobile_device_id,home_device_id) DO UPDATE SET expires_at=EXCLUDED.expires_at`, chi.URLParam(r, "id"), claims.DirectHomeID, claims.ExpiresAt)
 		if err != nil {
-			http.Error(w, "direct grant unavailable", 503)
+			http.Error(w, "direct grant unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		snapshot, err = h.snapshot(ctx, chi.URLParam(r, "id"), claims)
 		if err != nil {
-			http.Error(w, "device unavailable", 404)
+			http.Error(w, "device unavailable", http.StatusNotFound)
 			return
 		}
 	}
@@ -172,7 +182,10 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	ctx = socket.CloseRead(ctx)
 	last := ""
 	for {
-		data, _ := json.Marshal(snapshot)
+		data, marshalErr := json.Marshal(snapshot)
+		if marshalErr != nil {
+			return
+		}
 		if string(data) != last {
 			writeCtx, stop := context.WithTimeout(ctx, 10*time.Second)
 			err = wsjson.Write(writeCtx, socket, snapshot)
@@ -208,23 +221,23 @@ func (h *Handler) deviceAuthenticated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sourceIP := audit.ClientIP(r, h.cfg.TrustedProxyCIDRs)
 		if h.limiter == nil {
-			http.Error(w, "authentication unavailable", 503)
+			http.Error(w, "authentication unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		limit, limitErr := h.limiter.Allow(r.Context(), ratelimit.Key("direct", "device-auth", audit.RateLimitIP(sourceIP)), 20, time.Minute)
 		if limitErr != nil || !limit.Allowed {
-			http.Error(w, "authentication rate limited", 429)
+			http.Error(w, "authentication rate limited", http.StatusTooManyRequests)
 			return
 		}
 		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if provided == r.Header.Get("Authorization") || len(provided) > 128 {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		var owner, hash string
 		err := h.db.Pool.QueryRow(r.Context(), `SELECT owner_user_id,credential_hash FROM devices WHERE id=$1 AND status='active' AND os_platform NOT IN ('ios','android','tvos')`, chi.URLParam(r, "id")).Scan(&owner, &hash)
 		if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(provided)) != nil {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		claims := auth.Claims{Sub: owner, Audience: []string{auth.AudienceAdmin}, ExpiresAt: time.Now().Add(24 * time.Hour)}

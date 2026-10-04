@@ -64,15 +64,20 @@ open class SelkiePacketTunnelProvider: NEPacketTunnelProvider {
 
         if let providerProtocol = protocolConfiguration as? NETunnelProviderProtocol,
            let values = providerProtocol.providerConfiguration,
-           let token = values["directToken"] as? String,
-           let urlString = values["directPeerURL"] as? String,
-           let url = URL(string: urlString), url.scheme == "wss",
-           let configString = values["wgConfig"] as? String,
-           let parsed = try? WireGuardConfig(configString: configString),
-           let privateKey = parsed.privateKey {
+           values.keys.contains(where: { $0.hasPrefix("direct") }) {
+            guard let token = values["directToken"] as? String, !token.isEmpty,
+                  let urlString = values["directPeerURL"] as? String,
+                  let url = URL(string: urlString), url.scheme == "wss", url.host != nil,
+                  let deviceID = values["directDeviceID"] as? String, !deviceID.isEmpty,
+                  let configString = values["wgConfig"] as? String,
+                  let parsed = try? WireGuardConfig(configString: configString),
+                  let privateKey = parsed.privateKey else {
+                completionHandler(PacketTunnelProviderError.invalidTunnelConfig)
+                return
+            }
             directPrivateKey = privateKey
             directPeerURL = url
-            directDeviceID = values["directDeviceID"] as? String ?? url.pathComponents.dropLast().last
+            directDeviceID = deviceID
             startDirectPeers(url: url, token: token, completion: completionHandler)
             return
         }

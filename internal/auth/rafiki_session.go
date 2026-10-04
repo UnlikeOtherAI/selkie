@@ -10,9 +10,13 @@ import (
 	"github.com/unlikeotherai/selkie/internal/ratelimit"
 )
 
+const responseTokenField = "token"
+
 // ServeRafikiSession trusts only the separately configured Rafiki service key.
 // Rafiki binds the UOA subject and home id to its authenticated product session;
 // neither value may be accepted from an untrusted native request body there.
+//
+//nolint:gocyclo // Sequential broker authentication, configured home scope and current lease checks.
 func (h *CallbackHandler) ServeRafikiSession(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(h.cfg.RafikiServiceKey)
 	if key == "" || h.cfg.RafikiHomeDeviceID == "" {
@@ -69,5 +73,5 @@ func (h *CallbackHandler) ServeRafikiSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	h.auditInternalMintSession(ctx, r, userID)
-	writeJSON(w, 200, map[string]any{"token": token, "expires_at": expiresAt.UTC().Format(time.RFC3339)})
+	writeJSON(w, 200, map[string]any{responseTokenField: token, "expires_at": expiresAt.UTC().Format(time.RFC3339)})
 }

@@ -264,8 +264,8 @@ RETURNING u.id, u.is_super
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token":      token,
-		"expires_in": int(sessionTokenTTL.Seconds()),
+		responseTokenField: token,
+		"expires_in":       int(sessionTokenTTL.Seconds()),
 	})
 }
 

@@ -236,8 +236,15 @@ func (p *Peer) forward(ctx context.Context, client net.Conn, target string) {
 	}
 	defer local.Close()
 	finished := make(chan struct{}, 1)
-	go func() { _, _ = io.Copy(client, local); finished <- struct{}{} }()
-	_, _ = io.Copy(local, client)
+	go func() {
+		if _, copyErr := io.Copy(client, local); copyErr != nil {
+			_ = client.Close()
+		}
+		finished <- struct{}{}
+	}()
+	if _, copyErr := io.Copy(local, client); copyErr != nil {
+		_ = local.Close()
+	}
 	_ = local.Close()
 	_ = client.Close()
 	<-finished

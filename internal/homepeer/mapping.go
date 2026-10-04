@@ -18,8 +18,10 @@ import (
 	"github.com/huin/goupnp/ssdp"
 )
 
-const mappingDescription = "Selkie encrypted direct home"
-const mappingLease = 1200
+const (
+	mappingDescription = "Selkie encrypted direct home"
+	mappingLease       = 1200
+)
 
 type gateway interface {
 	GetExternalIPAddressCtx(context.Context) (string, error)
@@ -38,6 +40,8 @@ type Mapping struct {
 
 // MapUDP discovers a LAN gateway and creates one renewable UDP mapping. SSDP
 // responses, redirects, root descriptions and control URLs stay on the LAN.
+//
+//nolint:gocognit,gocyclo // Keep bounded LAN discovery and mapping ownership checks together.
 func MapUDP(ctx context.Context, port int) (*Mapping, error) {
 	if port < 1 || port > 65535 {
 		return nil, errors.New("invalid UDP listen port")
@@ -46,15 +50,21 @@ func MapUDP(ctx context.Context, port int) (*Mapping, error) {
 	if err != nil {
 		return nil, err
 	}
-	local := probe.LocalAddr().(*net.UDPAddr).IP.String()
+	localAddress, parseErr := netip.ParseAddrPort(probe.LocalAddr().String())
+	if parseErr != nil {
+		_ = probe.Close()
+		return nil, parseErr
+	}
+	local := localAddress.Addr().String()
 	_ = probe.Close()
 	udp, err := httpu.NewHTTPUClient()
 	if err != nil {
 		return nil, err
 	}
-	defer udp.Close() //nolint:errcheck // ephemeral discovery socket
+	defer udp.Close()
 	discoveryCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
+	//nolint:bodyclose // Each response in the returned slice is closed below.
 	responses, err := ssdp.SSDPRawSearchCtx(discoveryCtx, udp, "urn:schemas-upnp-org:device:InternetGatewayDevice:2", 2, 2)
 	if err != nil {
 		return nil, err
@@ -63,6 +73,9 @@ func MapUDP(ctx context.Context, port int) (*Mapping, error) {
 	// is constrained before it can leave the machine, including redirects.
 	goupnp.HTTPClientDefault = &http.Client{Timeout: 5 * time.Second, Transport: lanTransport{local: local}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("gateway redirects forbidden") }}
 	for _, response := range responses {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
 		location, err := url.Parse(response.Header.Get("Location"))
 		if err != nil || !localURL(location, local) {
 			continue

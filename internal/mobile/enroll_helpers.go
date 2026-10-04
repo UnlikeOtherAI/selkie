@@ -347,7 +347,7 @@ INSERT INTO devices (
     last_seen_at,
     updated_at,
     direct_scoped
-) VALUES ($1, $2, 'active', $3, $4, $5, $6, '', '', '', 1, 0, 0, 0, now(), now(), $7)
+) VALUES ($1, $2, 'active', $3, $4, $5, $6, '', '', '', 1, 0, 0, 0, now(), CURRENT_TIMESTAMP, $7)
 RETURNING id, host(overlay_ip)
 `, userID, req.Hostname, string(credentialHash), req.AppVersion, req.OSPlatform, req.OSArch, req.DirectScoped).Scan(&deviceID, &overlayIP)
 		return deviceID, overlayIP, err

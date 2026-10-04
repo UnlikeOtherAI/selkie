@@ -67,6 +67,7 @@ func (c client) post(ctx context.Context, path string, body, result any) error {
 
 func (c client) enroll(ctx context.Context, path string) (state, error) {
 	var existing state
+	//nolint:gosec // Operator-selected private state file, never a network-supplied path.
 	data, err := os.ReadFile(path)
 	if err == nil {
 		err = json.Unmarshal(data, &existing)
@@ -76,8 +77,8 @@ func (c client) enroll(ctx context.Context, path string) (state, error) {
 		return state{}, err
 	}
 	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return state{}, err
+	if _, checkedErr0 := rand.Read(raw); checkedErr0 != nil {
+		return state{}, checkedErr0
 	}
 	public, err := curve25519.X25519(raw, curve25519.Basepoint)
 	if err != nil {
@@ -99,12 +100,14 @@ func (c client) enroll(ctx context.Context, path string) (state, error) {
 		return state{}, err
 	}
 	existing.PrivateKey = base64.StdEncoding.EncodeToString(raw)
+	//nolint:gosec // Device private key is deliberately saved to the protected local state file only.
 	data, err = json.Marshal(existing)
 	if err != nil {
 		return state{}, err
 	}
 	// A new enrollment cannot overwrite an existing identity/key file.
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	//nolint:gosec // Operator-selected state path is created exclusively with owner permissions.
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return state{}, err
 	}
@@ -139,7 +142,7 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	control := client{base: strings.TrimRight(*base, "/"), token: strings.TrimSpace(string(token)), http: &http.Client{Timeout: 15 * time.Second}}
+	control := client{base: strings.TrimRight(*base, "/"), token: strings.TrimSpace(string(token)), http: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	identity, err := control.enroll(ctx, *stateFile)
 	if err != nil {
 		return err
@@ -162,60 +165,117 @@ func run() error {
 			}
 		}()
 	}
-	if err := direct.ValidateEndpoint(*endpoint); err != nil {
+	if checkedErr1 := direct.ValidateEndpoint(*endpoint); checkedErr1 != nil {
+		return checkedErr1
+	}
+	if checkedErr2 := control.post(ctx, "/api/v1/direct/home/"+identity.DeviceID+"/register", map[string]any{"endpoint": *endpoint, "service_port": *servicePort}, nil); checkedErr2 != nil {
+		return checkedErr2
+	}
+	delay := time.Second
+	for ctx.Err() == nil {
+		sessionErr := runSession(ctx, control, identity, *udpPort, *servicePort, *target)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if sessionErr != nil {
+			fmt.Fprintln(os.Stderr, "Direct home connection ended; reconnecting with service closed")
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+		}
+	}
+	return nil
+}
+
+func runSession(ctx context.Context, control client, identity state, udpPort, servicePort int, target string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	socketURL, err := url.Parse(control.base)
+	if err != nil {
 		return err
 	}
-	if err := control.post(ctx, "/api/v1/direct/home/"+identity.DeviceID+"/register", map[string]any{"endpoint": *endpoint, "service_port": *servicePort}, nil); err != nil {
-		return err
-	}
-	socketURL := *serverURL
 	socketURL.Scheme = "wss"
 	socketURL.Path = "/api/v1/direct/home/" + identity.DeviceID + "/peers"
-	socket, _, err := websocket.Dial(ctx, socketURL.String(), &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + control.token}}})
+	socket, response, err := websocket.Dial(ctx, socketURL.String(), &websocket.DialOptions{HTTPClient: control.http, HTTPHeader: http.Header{"Authorization": []string{"Bearer " + control.token}}})
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
 	if err != nil {
 		return errors.New("authenticated peer stream unavailable")
 	}
-	defer socket.CloseNow() //nolint:errcheck // best effort close
+	defer socket.CloseNow() //nolint:errcheck // Best effort socket cleanup.
 	socket.SetReadLimit(1 << 20)
-	peer, err := homepeer.New(identity.PrivateKey, identity.OverlayIP, *udpPort)
+	peer, err := homepeer.New(identity.PrivateKey, identity.OverlayIP, udpPort)
 	if err != nil {
 		return err
 	}
 	defer peer.Close()
+	firstCtx, stopFirst := context.WithTimeout(ctx, 15*time.Second)
 	var first direct.Snapshot
-	if err := wsjson.Read(ctx, socket, &first); err != nil {
+	err = wsjson.Read(firstCtx, socket, &first)
+	stopFirst()
+	if err != nil {
 		return errors.New("no authorized peer snapshot")
 	}
-	if err := peer.Apply(first); err != nil {
-		return err
+	if applyErr := peer.Apply(first); applyErr != nil {
+		return applyErr
 	}
-	fmt.Printf("Direct home service available at %s:%d; UDP endpoint %s\n", identity.OverlayIP, *servicePort, *endpoint)
-	failures := make(chan error, 1)
-	go func() { failures <- peer.Serve(ctx, *servicePort, *target) }()
+	fmt.Printf("Home peer overlay %s, local encrypted UDP %d, direct service TCP %d\n", identity.OverlayIP, udpPort, servicePort)
+	failures := make(chan error, 3)
+	go func() { failures <- peer.Serve(ctx, servicePort, target) }()
 	go func() {
 		for {
 			var snapshot direct.Snapshot
-			if err := wsjson.Read(ctx, socket, &snapshot); err != nil {
-				failures <- errors.New("peer authorization stream ended; closing direct service")
+			if readErr := wsjson.Read(ctx, socket, &snapshot); readErr != nil {
+				failures <- errors.New("peer authorization stream ended")
 				return
 			}
-			if err := peer.Apply(snapshot); err != nil {
-				failures <- err
+			if applyErr := peer.Apply(snapshot); applyErr != nil {
+				failures <- applyErr
 				return
 			}
 		}
 	}()
+	go func() { failures <- keepAlive(ctx, socket) }()
 	select {
 	case <-ctx.Done():
 		return nil
-	case err := <-failures:
-		return err
+	case failure := <-failures:
+		return failure
+	}
+}
+
+func keepAlive(ctx context.Context, socket *websocket.Conn) error {
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := socket.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				return errors.New("authenticated control stream lost liveness")
+			}
+		}
 	}
 }
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if checkedErr7 := run(); checkedErr7 != nil {
+		fmt.Fprintln(os.Stderr, checkedErr7)
 		os.Exit(1)
 	}
 }
