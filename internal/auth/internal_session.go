@@ -70,17 +70,11 @@ func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *htt
 		return
 	}
 	uoaSub := strings.TrimSpace(req.UOASub)
-	email := strings.TrimSpace(req.Email)
 	if uoaSub == "" {
 		writeJSONError(w, http.StatusBadRequest, "uoaSub is required")
 		return
 	}
-	if email == "" {
-		writeJSONError(w, http.StatusBadRequest, "email is required")
-		return
-	}
-
-	claims := &UOAClaims{Email: email, DisplayName: strings.TrimSpace(req.DisplayName)}
+	claims := &UOAClaims{}
 	claims.Subject = uoaSub
 
 	userID, isSuper, err := h.upsertUserFn(ctx, claims)
@@ -92,11 +86,7 @@ func (h *CallbackHandler) ServeInternalMintSession(w http.ResponseWriter, r *htt
 		return
 	}
 
-	displayName := claims.DisplayName
-	if displayName == "" {
-		displayName = email
-	}
-	token, err := h.mintToken(userID, isSuper, email, displayName, "", []string{AudienceMobile})
+	token, err := h.mintToken(userID, isSuper, "", "", "", []string{AudienceMobile})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to mint session token")
 		return

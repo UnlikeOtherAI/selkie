@@ -22,7 +22,7 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 
 # The WireGuard Go bridge sources are vendored locally (see Vendor/WireGuardKit).
-GO_SRC="$SRCROOT/Vendor/WireGuardKit/Sources/WireGuardKitGo"
+GO_SRC="$(CDPATH= cd -- "$(dirname -- "$0")/../Vendor/WireGuardKit/Sources/WireGuardKitGo" && pwd)"
 if [ ! -d "$GO_SRC" ]; then
     echo "error: could not locate vendored WireGuardKitGo sources at $GO_SRC"
     exit 1

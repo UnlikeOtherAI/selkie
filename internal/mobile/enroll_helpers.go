@@ -305,7 +305,7 @@ func upsertMobileDevice(ctx context.Context, tx pgx.Tx, userID string, req enrol
 	err := tx.QueryRow(ctx, `
 SELECT id, host(overlay_ip)
 FROM devices
-WHERE owner_user_id = $1 AND hostname = $2
+WHERE owner_user_id = $1 AND hostname = $2 AND os_platform IN ('ios','android','tvos')
 LIMIT 1
 `, userID, req.Hostname).Scan(&deviceID, &overlayIP)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {

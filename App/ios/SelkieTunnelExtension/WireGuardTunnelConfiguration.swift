@@ -47,8 +47,8 @@ extension TunnelConfiguration {
     /// config (the app injects the on-device key via `WireGuardConfig.settingPrivateKey`).
     convenience init(from config: WireGuardConfig, name: String?) throws {
         let interface = try Self.makeInterface(from: config)
-        let peer = try Self.makePeer(from: config)
-        self.init(name: name, interface: interface, peers: [peer])
+        let peers = try config.peers.map(Self.makePeer)
+        self.init(name: name, interface: interface, peers: peers)
     }
 
     private static func makeInterface(from config: WireGuardConfig) throws -> InterfaceConfiguration {
@@ -70,8 +70,8 @@ extension TunnelConfiguration {
         return interface
     }
 
-    private static func makePeer(from config: WireGuardConfig) throws -> PeerConfiguration {
-        guard let peerPublicKeyBase64 = config.peerPublicKey, !peerPublicKeyBase64.isEmpty else {
+    private static func makePeer(from config: WireGuardConfig.Peer) throws -> PeerConfiguration {
+        guard let peerPublicKeyBase64 = config.publicKey, !peerPublicKeyBase64.isEmpty else {
             throw WireGuardTunnelConfigurationError.missingPeerPublicKey
         }
         guard let peerPublicKey = PublicKey(base64Key: peerPublicKeyBase64) else {

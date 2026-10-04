@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		06387512E451E95C90082E06 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EDFA5B161487A15E0BAB7E3B /* CryptoKit.framework */; };
+		0D806204C0F1300A2246D5F7 /* SelkieVPNConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */; };
 		12A07E8E5719C0347C854BBB /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = 56686744CF975BA5F9955116 /* WireGuardKit */; };
 		13356B0463FAE614E4522980 /* TunnelMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 674C1E123EC35F1BE1AFD58A /* TunnelMessage.swift */; };
 		1A055FCA8E4A6F20E850F664 /* AuthenticationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F168384162A1C00BA2BFA80 /* AuthenticationServices.framework */; };
@@ -24,6 +25,7 @@
 		40A1F981746DB19270749C69 /* TunnelManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9068CA5CFE817ADD9F36C719 /* TunnelManagerTests.swift */; };
 		411879D968FE8FDFD9E1CD2B /* AppProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8BA0AECF58BBB1BD081D7B4 /* AppProtocols.swift */; };
 		43C2B5CD1102D82B8A512CE1 /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDD553DDCBF1F3B5B1F3D9F /* AppTheme.swift */; };
+		4510C2820971FBA7089DD535 /* SelkieControlSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */; };
 		49AD82212CD90EA800C813C3 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95E7115A8DF0528A75583993 /* LoginView.swift */; };
 		4B0622422EF695BEE4949BDA /* SelkieAppRevealBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7FCCCB373881F293986794 /* SelkieAppRevealBridge.swift */; };
 		4DFE55FD4D1193FDB1DA0E40 /* WireGuardConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A76420598808D2CE58E1F734 /* WireGuardConfig.swift */; };
@@ -31,8 +33,10 @@
 		5142D8B30AE194FC6438B792 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF1F0622DC0053F985A2247 /* APIClient.swift */; };
 		516BCCD8DC70BAA3E2B2EB2D /* WireGuardConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A76420598808D2CE58E1F734 /* WireGuardConfig.swift */; };
 		5251AA74A6664AFA301691B2 /* AppConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C79535564F4ED004329094F6 /* AppConfigTests.swift */; };
+		5611EDD6F59E071DDFA4CD49 /* SelkieVPNConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */; };
 		57E7AEF9790F989EBA8A7C8F /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EA020A5C85DAB8B69443639B /* NetworkExtension.framework */; };
 		5D74BB01859BFD494AD91DC8 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9ECAB81EFE910DC403DDAD39 /* UIKit.framework */; };
+		609CDAC199AFCC47AF0E100F /* SelkieVPNConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */; };
 		6215D130F232F781E921831A /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94439235779C7BA86B3585BB /* AppConfig.swift */; };
 		649559EF8030D69DC6BFE867 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EA020A5C85DAB8B69443639B /* NetworkExtension.framework */; };
 		6647A86F05639BE10A2D0EB8 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4E9350AD04BAC19FB6F306 /* PacketTunnelProvider.swift */; };
@@ -47,6 +51,7 @@
 		7C006A39231640C5C28ED2E8 /* CertificatePinning.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B3A3E82BE6690676F44B0D /* CertificatePinning.swift */; };
 		813941144C3356770761443A /* TunnelMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 674C1E123EC35F1BE1AFD58A /* TunnelMessage.swift */; };
 		850921FA8C2A526D7A6E7377 /* AuthAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A13BE4D17349F5D90FE823 /* AuthAPI.swift */; };
+		872356ED890AB5CF35FA9721 /* SelkieVPNConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */; };
 		88BA26BA4BD5E0AAD5011D0A /* AppRevealBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46A99BD985E2156D3A5830BD /* AppRevealBootstrap.swift */; };
 		8AEC540C7685DDA422F72A9F /* SelkieAppRevealBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7FCCCB373881F293986794 /* SelkieAppRevealBridge.swift */; };
 		8D04EDCE5C08A7FA25CC8CCF /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BC3F8FB0B137BF209ACDDB4 /* APIModels.swift */; };
@@ -58,9 +63,11 @@
 		A25F87FD1632EB0323B87EAD /* TVViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE19433EC9FF70D78030D2C9 /* TVViews.swift */; };
 		A52BEB8D9FC6460EDC41742C /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94439235779C7BA86B3585BB /* AppConfig.swift */; };
 		A59D3B4547D129E038697234 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B78A062779129314768B56AB /* Security.framework */; };
+		A809BAB2071C263480ED417E /* SelkieControlSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */; };
 		AE7520BFFEBB4617C1E1ECE9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 64AF3E91A8B5C50B4B2B1C6D /* Assets.xcassets */; };
 		B2060CFC23BE93BBFF51CF34 /* SelkieTunnelExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 2B9D617FEE7CD5BB1861F413 /* SelkieTunnelExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B2F6B051284E53A1ACA3B119 /* CertificatePinning.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B3A3E82BE6690676F44B0D /* CertificatePinning.swift */; };
+		B782B9E5858062120AF3FDC4 /* SelkieControlSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */; };
 		B7A5534E522814CB80CA4B71 /* AuthenticationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F168384162A1C00BA2BFA80 /* AuthenticationServices.framework */; };
 		BAFD26057913D3A2D40F37B8 /* WireGuardConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA2407CCBD43852ED29485F8 /* WireGuardConfigTests.swift */; };
 		BD065AF889AD35229876E5FC /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B54DEE4D31449E06C5D13F /* TokenStore.swift */; };
@@ -82,6 +89,7 @@
 		E51784608546F825AA0F55A6 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EDFA5B161487A15E0BAB7E3B /* CryptoKit.framework */; };
 		E7434C1ACB84780B48AE3FBF /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B54DEE4D31449E06C5D13F /* TokenStore.swift */; };
 		E767FCEEB29DB675B10C00E4 /* ServerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B740624C4B9F0BF069B16392 /* ServerService.swift */; };
+		EA9647745ABF8BF831FA7017 /* SelkieControlSessionDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */; };
 		EB1C290B51BE60BF3CEA746F /* MobileAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C192885437F3C3ED5FA04EF /* MobileAPI.swift */; };
 		EE278F062F1EB471FF7857E1 /* ServerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B740624C4B9F0BF069B16392 /* ServerService.swift */; };
 		F11C9F9522BB6384174D2929 /* TVViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE19433EC9FF70D78030D2C9 /* TVViews.swift */; };
@@ -150,9 +158,11 @@
 		0F168384162A1C00BA2BFA80 /* AuthenticationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AuthenticationServices.framework; path = System/Library/Frameworks/AuthenticationServices.framework; sourceTree = SDKROOT; };
 		10CDB5ED6C249BC3343E54AA /* SelkieTV.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SelkieTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		14468F1805376F4E8AA1B668 /* SelkieTVTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = SelkieTVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelkieControlSessionDelegate.swift; sourceTree = "<group>"; };
 		2A917A9CD58832758B169225 /* Selkie.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Selkie.entitlements; sourceTree = "<group>"; };
 		2B9D617FEE7CD5BB1861F413 /* SelkieTunnelExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = SelkieTunnelExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		2F16C326A66EA58937193793 /* AppStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateMachine.swift; sourceTree = "<group>"; };
+		36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelkieVPNConnector.swift; sourceTree = "<group>"; };
 		36BD50D745A5ECE8A75410C3 /* SelkieTunnelExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SelkieTunnelExtension.entitlements; sourceTree = "<group>"; };
 		3DF1F0622DC0053F985A2247 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		46A99BD985E2156D3A5830BD /* AppRevealBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRevealBootstrap.swift; sourceTree = "<group>"; };
@@ -254,6 +264,8 @@
 		20A39602DD6C509D0651F94D /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				17029CD2B0BA91BC01C5E461 /* SelkieControlSessionDelegate.swift */,
+				36A4DA05DA9F3E6C7E80C6BB /* SelkieVPNConnector.swift */,
 				674C1E123EC35F1BE1AFD58A /* TunnelMessage.swift */,
 				A76420598808D2CE58E1F734 /* WireGuardConfig.swift */,
 			);
@@ -746,6 +758,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				35F083A15D4262BF529A7F0B /* PacketTunnelProvider.swift in Sources */,
+				EA9647745ABF8BF831FA7017 /* SelkieControlSessionDelegate.swift in Sources */,
+				0D806204C0F1300A2246D5F7 /* SelkieVPNConnector.swift in Sources */,
 				F13C4E8BA9AE62219F91319F /* TunnelMessage.swift in Sources */,
 				366B97BB97C615F471FFB7FB /* WireGuardConfig.swift in Sources */,
 				67299D9FEC4C59D1AFF5D618 /* WireGuardTunnelConfiguration.swift in Sources */,
@@ -768,6 +782,8 @@
 				2BCC52B40EAC0C3EDDB5B621 /* MobileAPI.swift in Sources */,
 				C8D62327D2DC116560855E72 /* SelkieApp.swift in Sources */,
 				8AEC540C7685DDA422F72A9F /* SelkieAppRevealBridge.swift in Sources */,
+				B782B9E5858062120AF3FDC4 /* SelkieControlSessionDelegate.swift in Sources */,
+				609CDAC199AFCC47AF0E100F /* SelkieVPNConnector.swift in Sources */,
 				E767FCEEB29DB675B10C00E4 /* ServerService.swift in Sources */,
 				9B708B69319F0A064D256F08 /* SessionStore.swift in Sources */,
 				A25F87FD1632EB0323B87EAD /* TVViews.swift in Sources */,
@@ -785,6 +801,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				6647A86F05639BE10A2D0EB8 /* PacketTunnelProvider.swift in Sources */,
+				4510C2820971FBA7089DD535 /* SelkieControlSessionDelegate.swift in Sources */,
+				5611EDD6F59E071DDFA4CD49 /* SelkieVPNConnector.swift in Sources */,
 				13356B0463FAE614E4522980 /* TunnelMessage.swift in Sources */,
 				CC56D34E2A1964F1A9C179A3 /* WireGuardConfig.swift in Sources */,
 				94FE6E1D764255F9FA676B50 /* WireGuardTunnelConfiguration.swift in Sources */,
@@ -819,6 +837,8 @@
 				EB1C290B51BE60BF3CEA746F /* MobileAPI.swift in Sources */,
 				77D7B2113D6F9BEDED1A6E36 /* SelkieApp.swift in Sources */,
 				4B0622422EF695BEE4949BDA /* SelkieAppRevealBridge.swift in Sources */,
+				A809BAB2071C263480ED417E /* SelkieControlSessionDelegate.swift in Sources */,
+				872356ED890AB5CF35FA9721 /* SelkieVPNConnector.swift in Sources */,
 				C96F900C058C2675E59C490B /* ServerListView.swift in Sources */,
 				1B2B0D696D15F4193C6E641C /* ServerRow.swift in Sources */,
 				EE278F062F1EB471FF7857E1 /* ServerService.swift in Sources */,

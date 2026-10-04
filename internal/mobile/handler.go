@@ -137,6 +137,17 @@ func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if claims.DirectHomeID != "" {
+		if _, err := h.db.Pool.Exec(ctx, `UPDATE devices SET direct_scoped=true WHERE id=$1 AND owner_user_id=$2`, deviceID, claims.Sub); err != nil {
+			writeError(w, 503, "direct grant unavailable")
+			return
+		}
+		_, grantErr := h.db.Pool.Exec(ctx, `INSERT INTO direct_home_grants (mobile_device_id,home_device_id,expires_at) SELECT $1,d.id,$3 FROM devices d WHERE d.id=$2 AND d.status='active' AND d.direct_home_port IS NOT NULL ON CONFLICT (mobile_device_id,home_device_id) DO UPDATE SET expires_at=EXCLUDED.expires_at`, deviceID, claims.DirectHomeID, claims.ExpiresAt)
+		if grantErr != nil {
+			writeError(w, http.StatusServiceUnavailable, "direct grant unavailable")
+			return
+		}
+	}
 	h.auditMobileEnroll(ctx, r, claims.Sub, deviceID)
 
 	h.writeMobileEnrollSuccess(w, deviceID, claims.Sub, overlayIP)

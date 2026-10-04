@@ -51,9 +51,11 @@ const (
 
 // Claims holds the authenticated user identity extracted from a JWT.
 type Claims struct {
-	Sub      string
-	IsSuper  bool
-	Audience []string
+	Sub          string
+	IsSuper      bool
+	Audience     []string
+	ExpiresAt    time.Time
+	DirectHomeID string
 }
 
 // HasAudience reports whether the claims include the given audience value.
@@ -71,7 +73,8 @@ type contextKey string
 const claimsContextKey contextKey = "auth.claims"
 
 type sessionClaims struct {
-	IsSuper bool `json:"is_super"`
+	DirectHomeID string `json:"direct_home_id,omitempty"`
+	IsSuper      bool   `json:"is_super"`
 	jwt.RegisteredClaims
 }
 
@@ -162,9 +165,11 @@ func authenticateBearer(authorization string, secret []byte) (Claims, string) {
 	}
 
 	claims := Claims{
-		Sub:      parsedClaims.Subject,
-		IsSuper:  parsedClaims.IsSuper,
-		Audience: []string(parsedClaims.Audience),
+		Sub:          parsedClaims.Subject,
+		IsSuper:      parsedClaims.IsSuper,
+		Audience:     []string(parsedClaims.Audience),
+		ExpiresAt:    parsedClaims.ExpiresAt.Time,
+		DirectHomeID: parsedClaims.DirectHomeID,
 	}
 	if !claims.HasAudience(AudienceAdmin) && !claims.HasAudience(AudienceMobile) {
 		return Claims{}, "unrecognized_audience"
@@ -227,4 +232,10 @@ func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"}) //nolint:errcheck // best-effort write to HTTP response
+}
+
+// ContextWithClaims binds claims that were verified by a scoped device
+// authenticator. Callers must never pass claims supplied by a client directly.
+func ContextWithClaims(ctx context.Context, claims Claims) context.Context {
+	return context.WithValue(ctx, claimsContextKey, claims)
 }

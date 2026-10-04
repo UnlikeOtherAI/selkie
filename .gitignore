@@ -40,3 +40,7 @@ restore-services.sh
 App/ios/DerivedData*/
 App/ios/*.xcresult/
 *.log
+
+# Local direct transport build evidence
+.build/
+.*-direct.log

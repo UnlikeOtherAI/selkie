@@ -85,6 +85,7 @@ func (h *CallbackHandler) Mount(r chi.Router) {
 	// a shared service key, NOT a browser session — so it lives outside any
 	// session-guarded group, like the other /api paths.
 	r.Post("/api/v1/internal/mint-session", h.ServeInternalMintSession)
+	r.Post("/api/v1/internal/rafiki-session", h.ServeRafikiSession)
 	r.Get("/auth/dev-status", h.ServeDevStatus)
 	r.Get("/auth/dev-login", h.ServeDevLogin)
 }
@@ -226,7 +227,7 @@ func (h *CallbackHandler) ServeMobileHandoffExchange(w http.ResponseWriter, r *h
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after commit
 
-	var userID, email, displayName string
+	var userID string
 	var isSuper bool
 	err = tx.QueryRow(ctx, `
 UPDATE mobile_handoff_codes mh
@@ -236,8 +237,8 @@ WHERE mh.code_hash = sha256($1::bytea)
   AND mh.user_id = u.id
   AND mh.consumed_at IS NULL
   AND mh.expires_at > now()
-RETURNING u.id, u.email, u.display_name, u.is_super
-`, handoffCode).Scan(&userID, &email, &displayName, &isSuper)
+RETURNING u.id, u.is_super
+`, handoffCode).Scan(&userID, &isSuper)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -256,7 +257,7 @@ RETURNING u.id, u.email, u.display_name, u.is_super
 		return
 	}
 
-	token, err := h.mintToken(userID, isSuper, email, displayName, "", []string{AudienceMobile})
+	token, err := h.mintToken(userID, isSuper, "", "", "", []string{AudienceMobile})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to mint session token")
 		return
@@ -410,24 +411,16 @@ func (h *CallbackHandler) upsertUser(ctx context.Context, claims *UOAClaims) (st
 	}
 	firstUser := count == 0
 
-	email := claims.Email
-	displayName := claims.DisplayName
-	if displayName == "" {
-		displayName = email
-	}
-
 	var userID string
 	var isSuper bool
 	err = tx.QueryRow(ctx, `
-        INSERT INTO users (external_id, email, display_name, is_super, last_login_at)
-        VALUES ($1, $2, $3, $4, now())
+        INSERT INTO users (external_id, is_super, last_login_at)
+        VALUES ($1, $2, now())
         ON CONFLICT (external_id) DO UPDATE
-            SET email = EXCLUDED.email,
-                display_name = EXCLUDED.display_name,
-                last_login_at = now(),
+            SET last_login_at = now(),
                 updated_at = now()
         RETURNING id, is_super
-    `, claims.Subject, email, displayName, firstUser).Scan(&userID, &isSuper)
+    `, claims.Subject, firstUser).Scan(&userID, &isSuper)
 	if err != nil {
 		return "", false, err
 	}

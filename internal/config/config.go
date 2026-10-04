@@ -66,6 +66,8 @@ type Config struct {
 	// the endpoint is disabled and returns 503. Loaded from
 	// SELKIE_INTERNAL_SERVICE_KEY.
 	InternalServiceKey       string
+	RafikiServiceKey         string
+	RafikiHomeDeviceID       string
 	TurnHost                 string
 	TurnPort                 int
 	CoturnSecret             string
@@ -138,6 +140,8 @@ func Load() Config {
 		RedisURL:                 os.Getenv("REDIS_URL"),
 		InternalSessionSecret:    os.Getenv("INTERNAL_SESSION_SECRET"),
 		InternalServiceKey:       os.Getenv("SELKIE_INTERNAL_SERVICE_KEY"),
+		RafikiServiceKey:         os.Getenv("SELKIE_RAFIKI_SERVICE_KEY"),
+		RafikiHomeDeviceID:       os.Getenv("SELKIE_RAFIKI_HOME_DEVICE_ID"),
 		TurnHost:                 os.Getenv("TURN_HOST"),
 		TurnPort:                 getenvInt("TURN_PORT", 3478),
 		CoturnSecret:             os.Getenv("COTURN_SECRET"),
