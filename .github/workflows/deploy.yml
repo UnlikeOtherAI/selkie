@@ -44,10 +44,10 @@ jobs:
       - name: rsync source to server
         run: |
           rsync -az --delete \
-            --exclude '.git' --exclude '.worktrees' --exclude 'node_modules' \
-            --exclude '.playwright-cli' --exclude '.playwright-mcp' --exclude 'e2e' \
-            --exclude 'App' --exclude 'control-server' --exclude 'control-server-new' \
-            --exclude '*.tar' --exclude '.env' \
+            --exclude '/.git' --exclude '/.worktrees' --exclude '/.build' --exclude 'node_modules' \
+            --exclude '/.playwright-cli' --exclude '/.playwright-mcp' --exclude '/e2e' \
+            --exclude '/App' --exclude '/control-server' --exclude '/control-server-new' \
+            --exclude '/*.tar' --exclude '.env' \
             -e "ssh -i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes" \
             ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
 
