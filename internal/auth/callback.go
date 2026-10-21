@@ -46,6 +46,7 @@ const (
 // CallbackHandler handles the OAuth callback from UOA, upserting the user and issuing a session JWT.
 type CallbackHandler struct {
 	sessions *SessionManager
+	profiles profileCache
 	db       *store.DB
 	cfg      config.Config
 	audit    *audit.Logger
@@ -127,7 +128,7 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	userID, isSuper, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOARedirectURL, verifier)
+	userID, isSuper, uoaClaims, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOARedirectURL, verifier)
 	if err != nil {
 		writeExchangeError(w, err)
 		return
