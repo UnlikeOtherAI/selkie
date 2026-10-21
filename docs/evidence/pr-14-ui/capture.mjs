@@ -1,10 +1,11 @@
 // Explicit headless comparison of the base and repaired browser session restoration.
-/* global localStorage, document */
+/* global localStorage, sessionStorage, document */
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const logo = await readFile('assets/icon-1024.png');
 const key = 'e2e-test-secret-that-is-long-enough';
 const exp = Math.floor(Date.now() / 1000) + 3600;
 const claims = { sub: 'fixture-product-reference', jti: 'fixture-original-session', is_super: true,
@@ -30,6 +31,7 @@ try {
     }, legacy);
     await page.route('**/*', async route => {
       const request = route.request(), path = new URL(request.url()).pathname;
+      if (path === '/assets/icon-1024.png') return route.fulfill({ contentType: 'image/png', body: logo });
       const authenticated = request.headers().authorization?.startsWith('Bearer ');
       if (path === '/auth/session') return route.fulfill({ status: authenticated ? 200 : 401, json: profile });
       if (path === '/api/v1/auth/session') return route.fulfill({ json: { token: clean } });
