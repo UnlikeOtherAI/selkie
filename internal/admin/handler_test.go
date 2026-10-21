@@ -51,7 +51,7 @@ func setupRouter(t *testing.T) chi.Router {
 
 	cfg := config.Config{InternalSessionSecret: testSecret}
 	db := &store.DB{}
-	h := admin.New(db, nil, cfg, nil, nil)
+	h := admin.New(db, nil, cfg, nil, nil, fixtureSessionValidator())
 
 	r := chi.NewRouter()
 	h.Mount(r)

@@ -99,6 +99,7 @@ func TestHandleEnrollRateLimited(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	body := fmt.Sprintf(`{"hostname":"iphone","os_platform":"ios","os_arch":"arm64","app_version":"0.1.0","wg_public_key":%q}`, validWGKey)
@@ -358,6 +359,7 @@ func TestHandleEnrollValidationErrorResponse(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	// hostname uses an underscore (DNS-unsafe). The bad value must not be echoed.
@@ -415,6 +417,7 @@ func TestHandleDisconnectRateLimited(t *testing.T) {
 	h.disconnector = disc
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
@@ -445,6 +448,7 @@ func TestHandleDisconnectRetiresDevices(t *testing.T) {
 	h.disconnector = disc
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
@@ -489,6 +493,7 @@ func TestHandleDisconnectNoDevicesStillSyncs(t *testing.T) {
 	h.disconnector = disc
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
@@ -517,6 +522,7 @@ func TestHandleDisconnectStoreFailure(t *testing.T) {
 	h.disconnector = disc
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
@@ -626,6 +632,7 @@ func TestHandleDisconnectSyncFailureReturns503(t *testing.T) {
 	h.disconnector = disc
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
@@ -762,6 +769,7 @@ func TestHandleDisconnect_RetryAfterSyncFailureReconciles(t *testing.T) {
 	h.disconnector = disc
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
@@ -835,6 +843,7 @@ func TestHandleDisconnectSyncFailureAuditOutcome(t *testing.T) {
 	h.audit = spy
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)
@@ -874,6 +883,7 @@ func TestHandleDisconnectSyncFailureRetryAfterHeader(t *testing.T) {
 	h.disconnector = disc
 
 	router := chi.NewRouter()
+	h.validator = fixtureSessionValidator()
 	h.Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mobile/disconnect", nil)

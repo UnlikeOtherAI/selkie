@@ -1,8 +1,8 @@
-import { NavLink, useNavigate, useLocation } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import type { JWTClaims } from "../lib/auth";
-import { removeToken } from "../lib/auth";
+import { getToken, removeToken } from "../lib/auth";
 
 interface NavItem {
   path: string;
@@ -85,7 +85,6 @@ function navLinkCls({ isActive }: { isActive: boolean }) {
 }
 
 export function Sidebar({ claims }: { claims: JWTClaims | null }) {
-  const navigate = useNavigate();
   const location = useLocation();
   const [profile, setProfile] = useState<{ email?: string; display_name?: string; picture?: string } | null>(null);
   useEffect(() => {
@@ -104,9 +103,11 @@ export function Sidebar({ claims }: { claims: JWTClaims | null }) {
     return () => { controller.abort(); window.removeEventListener("focus", refresh); };
   }, [claims?.sub, location.pathname]);
 
-  const handleSignOut = () => {
-    removeToken();
-    navigate("/login");
+  const [logoutError,setLogoutError]=useState("");
+  const handleSignOut = async () => {
+    const response = await fetch("/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, redirect: "error" }).catch(() => null);
+    if (!response?.ok) { setLogoutError("Could not sign out. Try again."); return; }
+    removeToken(); window.location.replace("/login");
   };
 
   const initial =
@@ -118,6 +119,7 @@ export function Sidebar({ claims }: { claims: JWTClaims | null }) {
   return (
     <aside className="w-56 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800">
       {/* Logo */}
+      {logoutError && <p role="alert">{logoutError}</p>}
       <div className="h-14 flex items-center px-4 gap-2.5 border-b border-slate-800">
         <img
           src="/assets/icon-1024.png"

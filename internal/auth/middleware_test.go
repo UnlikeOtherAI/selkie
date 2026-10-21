@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -30,7 +31,7 @@ func newProtectedRouter(extraMW ...func(http.Handler) http.Handler) http.Handler
 	r := chi.NewRouter()
 	cfg := config.Config{InternalSessionSecret: middlewareTestSecret}
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(cfg, nil, nil))
+		r.Use(auth.Middleware(cfg, nil, nil, auth.SessionValidatorFunc(func(_ context.Context, claims auth.Claims) (auth.Claims, error) { return claims, nil })))
 		for _, mw := range extraMW {
 			r.Use(mw)
 		}

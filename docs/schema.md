@@ -22,12 +22,14 @@ CREATE EXTENSION IF NOT EXISTS citext;
 
 ## `users`
 
+Migration 004 removes UOA profile columns while retaining ownership and audit UUIDs.
+Scoped session capabilities and mobile handoffs are described in
+[debug-login-sessions.md](debug-login-sessions.md).
+
 ```sql
 CREATE TABLE users (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     external_id     text NOT NULL UNIQUE,
-    email           citext NOT NULL UNIQUE,
-    display_name    text NOT NULL,
     status          text NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'disabled')),
     is_super        boolean NOT NULL DEFAULT false,

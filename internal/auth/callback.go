@@ -2,19 +2,12 @@ package auth
 
 import (
 	"context"
-	crand "crypto/rand"
-	"encoding/json"
 	"errors"
-	"io"
-	"math/big"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
@@ -52,24 +45,30 @@ const (
 
 // CallbackHandler handles the OAuth callback from UOA, upserting the user and issuing a session JWT.
 type CallbackHandler struct {
-	db      *store.DB
-	cfg     config.Config
-	audit   *audit.Logger
-	logger  *zap.Logger
-	limiter ratelimit.Limiter
+	sessions *SessionManager
+	db       *store.DB
+	cfg      config.Config
+	audit    *audit.Logger
+	logger   *zap.Logger
+	limiter  ratelimit.Limiter
 	// upsertUserFn indirects the user-upsert step so the internal S2S
 	// mint-session handler can be exercised without a live database. In
 	// production it points at h.upsertUser — the EXACT path a browser or
 	// mobile login uses — so the user row a brokered session produces is
 	// identical to a normal login (first user becomes super, etc.).
-	upsertUserFn func(ctx context.Context, claims *UOAClaims) (string, bool, error)
-	profiles     profileCache
+	upsertUserFn   func(ctx context.Context, claims *UOAClaims) (string, bool, error)
+	createBrokerFn func(context.Context, string, string, brokerValidation) (string, error)
 }
 
 // NewCallbackHandler creates a CallbackHandler with the given database, config, and audit logger.
-func NewCallbackHandler(db *store.DB, cfg config.Config, auditor *audit.Logger, logger *zap.Logger, limiter ratelimit.Limiter) *CallbackHandler {
-	h := &CallbackHandler{db: db, cfg: cfg, audit: auditor, logger: logger, limiter: limiter}
+func NewCallbackHandler(db *store.DB, cfg config.Config, auditor *audit.Logger, logger *zap.Logger, limiter ratelimit.Limiter, managers ...*SessionManager) *CallbackHandler {
+	manager := NewSessionManager(db, cfg)
+	if len(managers) > 0 {
+		manager = managers[0]
+	}
+	h := &CallbackHandler{sessions: manager, db: db, cfg: cfg, audit: auditor, logger: logger, limiter: limiter}
 	h.upsertUserFn = h.upsertUser
+	h.createBrokerFn = manager.createBroker
 	return h
 }
 
@@ -86,7 +85,10 @@ func (h *CallbackHandler) Mount(r chi.Router) {
 	// a shared service key, NOT a browser session — so it lives outside any
 	// session-guarded group, like the other /api paths.
 	r.Post("/api/v1/internal/mint-session", h.ServeInternalMintSession)
-	r.Post("/api/v1/internal/rafiki-session", h.ServeRafikiSession)
+	r.Get("/auth/session", h.ServeSession)
+	r.Post("/auth/logout", h.ServeLogout)
+	r.Post("/auth/debug-login/issue", h.ServeDebugIssue)
+	r.Post("/auth/debug-login/redeem", h.ServeDebugRedeem)
 	r.Get("/auth/dev-status", h.ServeDevStatus)
 	r.Get("/auth/dev-login", h.ServeDevLogin)
 	r.With(Middleware(h.cfg, h.audit, h.limiter), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/session", h.ServeReferenceSession)
@@ -133,7 +135,7 @@ func (h *CallbackHandler) ServeCallback(w http.ResponseWriter, r *http.Request) 
 
 	h.auditLogin(r.Context(), r, userID)
 
-	token, err := h.mintToken(userID, isSuper, []string{AudienceAdmin})
+	token, err := h.mintSessionToken(userID, isSuper, uoaClaims.SessionID, []string{AudienceAdmin})
 	if err != nil {
 		http.Error(w, "token error", http.StatusInternalServerError)
 		return
@@ -151,7 +153,7 @@ func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Req
 		http.Error(w, "missing or expired login session", http.StatusBadRequest)
 		return
 	}
-	userID, _, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOAMobileRedirectURL, verifier)
+	userID, _, uoaClaims, err := h.exchangeAndUpsertUser(r.Context(), r.URL.Query().Get("code"), h.cfg.UOAMobileRedirectURL, verifier)
 	if err != nil {
 		writeExchangeError(w, err)
 		return
@@ -159,7 +161,7 @@ func (h *CallbackHandler) ServeMobileCallback(w http.ResponseWriter, r *http.Req
 
 	h.auditLogin(r.Context(), r, userID)
 
-	handoffCode, err := h.createMobileHandoffCode(r.Context(), userID)
+	handoffCode, err := h.createMobileHandoffCode(r.Context(), userID, uoaClaims.SessionID)
 	if err != nil {
 		if h.logger != nil {
 			h.logger.Error("create mobile handoff code", zap.Error(err), zap.String("user_id", userID))
@@ -207,7 +209,7 @@ func (h *CallbackHandler) ServeMobileHandoffExchange(w http.ResponseWriter, r *h
 	// a fresh bucket per attempt — effectively disabling the per-IP cap on
 	// exchange volume. The per-code failure counter (recordMobileHandoffFailure)
 	// already enforces "this specific code may not be probed forever".
-	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.RateLimitIP(sourceIP)), mobileHandoffExchangeLimit, mobileHandoffExchangeWindow) {
+	if !h.allowRateLimit(ctx, w, ratelimit.Key("mobile", "handoff", "exchange", audit.RateLimitIP(sourceIP)), mobileHandoffExchangeLimit) {
 		cancel()
 		return
 	}
@@ -225,7 +227,7 @@ func (h *CallbackHandler) ServeMobileHandoffExchange(w http.ResponseWriter, r *h
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback is best-effort after commit
 
-	var userID string
+	var userID, sessionID string
 	var isSuper bool
 	err = tx.QueryRow(ctx, `
 UPDATE mobile_handoff_codes mh
@@ -235,8 +237,8 @@ WHERE mh.code_hash = sha256($1::bytea)
   AND mh.user_id = u.id
   AND mh.consumed_at IS NULL
   AND mh.expires_at > now()
-RETURNING u.id, u.is_super
-`, handoffCode).Scan(&userID, &isSuper)
+RETURNING u.id, mh.session_id, u.is_super
+`, handoffCode).Scan(&userID, &sessionID, &isSuper)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -255,15 +257,15 @@ RETURNING u.id, u.is_super
 		return
 	}
 
-	token, err := h.mintToken(userID, isSuper, []string{AudienceMobile})
+	token, err := h.mintSessionToken(userID, isSuper, sessionID, []string{AudienceMobile})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to mint session token")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		responseTokenField: token,
-		"expires_in":       int(sessionTokenTTL.Seconds()),
+		fieldToken:     token,
+		fieldExpiresIn: int(sessionTokenTTL.Seconds()),
 	})
 }
 
@@ -278,8 +280,8 @@ func (h *CallbackHandler) checkRateLimit(ctx context.Context, key string, limit 
 	return decision, err
 }
 
-func (h *CallbackHandler) allowRateLimit(ctx context.Context, w http.ResponseWriter, key string, limit int64, window time.Duration) bool {
-	decision, err := h.checkRateLimit(ctx, key, limit, window)
+func (h *CallbackHandler) allowRateLimit(ctx context.Context, w http.ResponseWriter, key string, limit int64) bool {
+	decision, err := h.checkRateLimit(ctx, key, limit, time.Minute)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "rate limiting unavailable")
 		return false
@@ -321,9 +323,9 @@ func (h *CallbackHandler) handleInvalidMobileHandoff(ctx context.Context, w http
 	writeJSONError(w, http.StatusUnauthorized, "invalid mobile handoff code")
 }
 
-func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redirectURL, codeVerifier string) (string, bool, error) {
+func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redirectURL, codeVerifier string) (string, bool, *UOAClaims, error) {
 	if strings.TrimSpace(code) == "" {
-		return "", false, errMissingCode
+		return "", false, nil, errMissingCode
 	}
 
 	uoaClaims, err := ExchangeCode(ctx, code, redirectURL, codeVerifier)
@@ -334,18 +336,18 @@ func (h *CallbackHandler) exchangeAndUpsertUser(ctx context.Context, code, redir
 		if h.logger != nil {
 			h.logger.Warn("uoa code exchange failed", zap.Error(err))
 		}
-		return "", false, errAuthFailed
+		return "", false, nil, errAuthFailed
 	}
 
-	userID, isSuper, err := h.upsertUser(ctx, uoaClaims)
+	userID, isSuper, id, err := h.admitFreshFamily(ctx, uoaClaims)
 	if err != nil {
-		return "", false, errInternal
+		return "", false, nil, errInternal
 	}
-
-	return userID, isSuper, nil
+	uoaClaims.SessionID = id
+	return userID, isSuper, uoaClaims, nil
 }
 
-func (h *CallbackHandler) createMobileHandoffCode(ctx context.Context, userID string) (string, error) {
+func (h *CallbackHandler) createMobileHandoffCode(ctx context.Context, userID, sessionID string) (string, error) {
 	if h.db == nil || h.db.Pool == nil {
 		return "", errors.New("database is required")
 	}
@@ -357,9 +359,9 @@ func (h *CallbackHandler) createMobileHandoffCode(ctx context.Context, userID st
 		}
 
 		_, err = h.db.Pool.Exec(ctx, `
-INSERT INTO mobile_handoff_codes (code_hash, user_id, expires_at)
-VALUES (sha256($1::bytea), $2, $3)
-`, code, userID, time.Now().UTC().Add(mobileHandoffTTL))
+INSERT INTO mobile_handoff_codes (code_hash, user_id, expires_at, session_id)
+VALUES (sha256($1::bytea), $2, $3, $4)
+`, code, userID, time.Now().UTC().Add(mobileHandoffTTL), sessionID)
 		if err == nil {
 			return code, nil
 		}
@@ -429,156 +431,8 @@ func (h *CallbackHandler) upsertUser(ctx context.Context, claims *UOAClaims) (st
 	return userID, isSuper || firstUser, nil
 }
 
-type jwtClaims struct {
-	Sub     string `json:"sub"`
-	IsSuper bool   `json:"is_super"`
-	jwt.RegisteredClaims
-}
-
-// TODO(replay-defense): tokens here are bearer-only with a 24h expiry. A stolen
-// JWT is valid until exp. Mitigating this requires a server-side session table
-// keyed on `jti` with a per-request lookup in auth.Middleware (or an explicit
-// revocation list). Tracked separately; not a regression introduced here.
-func (h *CallbackHandler) mintToken(userID string, isSuper bool, audience []string) (string, error) {
-	if len(audience) == 0 {
-		return "", errors.New("audience is required")
-	}
-	now := time.Now()
-	c := jwtClaims{
-		Sub:     userID,
-		IsSuper: isSuper,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    Issuer,
-			Subject:   userID,
-			Audience:  jwt.ClaimStrings(audience),
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(sessionTokenTTL)),
-		},
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).
-		SignedString([]byte(h.cfg.InternalSessionSecret))
-}
-
 var (
 	errMissingCode = errors.New("missing code")
 	errAuthFailed  = errors.New("auth failed")
 	errInternal    = errors.New("internal error")
 )
-
-func decodeSingleJSONObject(r *http.Request, dst any) error {
-	defer r.Body.Close()
-
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
-
-	var extra json.RawMessage
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return errors.New("request body must contain a single JSON object")
-	}
-
-	return nil
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value) //nolint:errcheck // best-effort write to HTTP response
-}
-
-func writeJSONError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
-}
-
-func writeRateLimitError(w http.ResponseWriter, retryAfter time.Duration) {
-	seconds := int(retryAfter.Seconds())
-	if retryAfter%time.Second != 0 {
-		seconds++
-	}
-	if seconds < 1 {
-		seconds = 1
-	}
-	w.Header().Set("Retry-After", strconv.Itoa(seconds))
-	writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded")
-}
-
-func randomMobileHandoffCode(length int) (string, error) {
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-	chars := make([]byte, length)
-	bound := big.NewInt(int64(len(alphabet)))
-	for i := range chars {
-		n, err := crand.Int(crand.Reader, bound)
-		if err != nil {
-			return "", err
-		}
-		chars[i] = alphabet[n.Int64()]
-	}
-
-	return string(chars), nil
-}
-
-func setPKCEVerifierCookie(w http.ResponseWriter, r *http.Request, verifier string) {
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set per-request via isHTTPS(r); HttpOnly + SameSite=Lax are always set.
-		Name:     pkceVerifierCookieName,
-		Value:    verifier,
-		Path:     "/",
-		Expires:  time.Now().Add(loginFlowCookieTTL),
-		MaxAge:   int(loginFlowCookieTTL.Seconds()),
-		HttpOnly: true,
-		Secure:   isHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-}
-
-func clearPKCEVerifierCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is set per-request via isHTTPS(r); HttpOnly + SameSite=Lax are always set.
-		Name:     pkceVerifierCookieName,
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   isHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-}
-
-func pkceVerifierFromCookie(r *http.Request) string {
-	cookie, err := r.Cookie(pkceVerifierCookieName)
-	if err != nil || cookie == nil {
-		return ""
-	}
-	return strings.TrimSpace(cookie.Value)
-}
-
-func isHTTPS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	if proto := r.Header.Get("X-Forwarded-Proto"); strings.EqualFold(proto, "https") {
-		return true
-	}
-	return false
-}
-
-func mobileRedirectURL(baseURL, handoffCode, state string) (string, error) {
-	if strings.TrimSpace(baseURL) == "" {
-		return "", errors.New("mobile redirect url is required")
-	}
-
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return "", err
-	}
-
-	query := parsed.Query()
-	query.Set("handoff_code", handoffCode)
-	if strings.TrimSpace(state) != "" {
-		query.Set("state", state)
-	}
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
-}

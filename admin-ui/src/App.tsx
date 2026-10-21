@@ -30,41 +30,40 @@ export function App() {
   const [claims, setClaims] = useState<JWTClaims | null>(null);
   const [tokenForExchange] = useState(() => extractTokenFromHash() ?? getToken());
   const [checked, setChecked] = useState(false);
+ const [unavailable,setUnavailable]=useState(false);
+ const [logoutPending,setLogoutPending]=useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
     const stored = tokenForExchange;
-    if (stored && !isTokenValid(stored)) removeToken();
-    const controller = new AbortController();
-    void (async () => {
-      try {
-        if (stored && isTokenValid(stored)) {
-          // Old profile-bearing JWTs must leave persistent storage before exchange.
-          const oldClaims = parseJWT(stored) as Record<string, unknown> | null;
-          if (oldClaims && ["email", "display_name", "picture"].some((key) => key in oldClaims)) {
-            removeToken();
-          }
-          const response = await fetch("/api/v1/auth/session", {
-            headers: { Authorization: `Bearer ${stored}` },
-            credentials: "omit", redirect: "error", signal: controller.signal,
-          });
-          if (!response.ok) { removeToken(); return; }
-          const session = await response.json() as { token: string };
-          if (controller.signal.aborted) return;
-          setToken(session.token);
-          setClaims(parseJWT(session.token));
-          if (location.pathname === "/login") navigate("/admin", { replace: true });
+    if (stored) {
+      const previous = parseJWT(stored) as Record<string, unknown> | null;
+      if (previous && ["email", "display_name", "picture"].some(key => key in previous)) removeToken();
+      else setToken(stored);
+    }
+    if (!stored || !isTokenValid(stored)) { setChecked(true); return; }
+    fetch("/auth/session", { headers: { Authorization: `Bearer ${stored}` }, cache: "no-store", redirect: "error" })
+      .then(async (response) => {
+        if (response.status === 401) { removeToken(); setChecked(true); return; }
+        if (!response.ok) {
+          const status: { logout_pending?: boolean } = await response.json();
+          setLogoutPending(status.logout_pending === true);
+          throw new Error("Session unavailable");
         }
-      } catch {
-        // A failed exchange never restores a copied profile-bearing session.
-      } finally {
-        if (!controller.signal.aborted) setChecked(true);
-      }
-    })();
-    return () => controller.abort();
+        const profile: JWTClaims = await response.json();
+        setClaims(profile); setChecked(true);
+        if (location.pathname === "/login") navigate("/admin", { replace: true });
+      }).catch(() => setUnavailable(true));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  async function retrySession() {
+    if (!logoutPending) { window.location.reload(); return; }
+    const response = await fetch("/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, redirect: "error" }).catch(() => null);
+    if (response?.ok) { removeToken(); window.location.replace("/login"); }
+  }
+
+  if (unavailable) return <div className="h-full flex flex-col items-center justify-center gap-4"><p>Session temporarily unavailable.</p><button onClick={() => void retrySession()}>Retry</button></div>;
   if (!checked) return null;
 
   return (

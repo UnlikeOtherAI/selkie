@@ -37,7 +37,7 @@ type profileCache struct {
 func (h *CallbackHandler) ServeReferenceSession(w http.ResponseWriter, r *http.Request) {
 	claims, _ := ClaimsFromContext(r.Context())
 	now := time.Now()
-	reference := sessionClaims{IsSuper: claims.IsSuper, RegisteredClaims: jwt.RegisteredClaims{Issuer: Issuer, Subject: claims.Sub, Audience: jwt.ClaimStrings(claims.Audience), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(claims.ExpiresAt)}}
+	reference := sessionClaims{IsSuper: claims.IsSuper, RegisteredClaims: jwt.RegisteredClaims{ID: claims.SessionID, Issuer: Issuer, Subject: claims.Sub, Audience: jwt.ClaimStrings(claims.Audience), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(claims.ExpiresAt)}}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, reference).SignedString([]byte(h.cfg.InternalSessionSecret))
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "session unavailable")
