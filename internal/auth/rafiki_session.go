@@ -29,7 +29,7 @@ func (h *CallbackHandler) ServeRafikiSession(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if !h.allowRateLimit(ctx, w, ratelimit.Key("internal", "rafiki-session"), internalMintSessionLimit, internalMintSessionWindow) {
+	if !h.allowRateLimit(ctx, w, ratelimit.Key("internal", "rafiki-session"), internalMintSessionLimit) {
 		return
 	}
 	var req struct {
@@ -73,5 +73,5 @@ func (h *CallbackHandler) ServeRafikiSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	h.auditInternalMintSession(ctx, r, userID)
-	writeJSON(w, 200, map[string]any{responseTokenField: token, "expires_at": expiresAt.UTC().Format(time.RFC3339)})
+	writeJSON(w, 200, map[string]any{responseTokenField: token, fieldExpiresAt: expiresAt.UTC().Format(time.RFC3339)})
 }

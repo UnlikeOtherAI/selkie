@@ -72,7 +72,7 @@ func (h *CallbackHandler) ServeSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "session temporarily unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{fieldSubject: claims.Sub, "session_id": claims.SessionID, fieldEmail: profile.Email, "display_name": profile.DisplayName, "picture": profile.Picture, "is_super": isSuper})
+	writeJSON(w, http.StatusOK, map[string]any{fieldSubject: claims.Sub, "session_id": claims.SessionID, fieldEmail: profile.Email, fieldDisplayName: profile.DisplayName, fieldPicture: profile.Picture, "is_super": isSuper})
 }
 
 func (h *CallbackHandler) ServeLogout(w http.ResponseWriter, r *http.Request) {

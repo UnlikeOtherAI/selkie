@@ -11,8 +11,10 @@ import (
 func TestRafikiDirectCapabilityDoesNotBecomeAnAccountSession(t *testing.T) {
 	now := time.Now()
 	cfg := config.Config{RafikiServiceKey: "dedicated-service-key", RafikiHomeDeviceID: "home"}
-	original := Claims{CapabilityKind: RafikiDirectCapability, Sub: "user", DirectHomeID: "home",
-		Audience: []string{AudienceMobile}, ExpiresAt: now.Add(5 * time.Minute)}
+	original := Claims{
+		CapabilityKind: RafikiDirectCapability, Sub: "user", DirectHomeID: "home",
+		Audience: []string{AudienceMobile}, ExpiresAt: now.Add(5 * time.Minute),
+	}
 	if !validRafikiDirect(cfg, original, now) {
 		t.Fatal("configured five-minute machine grant refused")
 	}

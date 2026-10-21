@@ -105,7 +105,7 @@ func (h *CallbackHandler) fetchProfile(ctx context.Context, reference string) (u
 	if err != nil || parseErr != nil || endpoint.Host == "" || endpoint.User != nil || (endpoint.Scheme != "https" && !h.cfg.DevMode) || h.cfg.UOASharedSecret == "" {
 		return userProfile{}, errors.New("UOA profile configuration unavailable")
 	}
-	query := url.Values{"domain": {domain}, "user_id": {reference}}
+	query := url.Values{fieldDomain: {domain}, "user_id": {reference}}
 	endpoint.RawQuery = query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {

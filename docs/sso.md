@@ -95,3 +95,18 @@ applied `006_uoa_reference_only.sql`: removing the already-absent profile column
 is idempotent. Shipped migrations are unchanged. Rehearse both startup histories
 before the coordinated release; the older deployment receipts describe their
 recorded revisions and are not evidence for this integration head.
+
+### Current integration checks
+
+Browser callback exchange keeps the issued UOA claims and session reference.
+The callback handler retains its live profile cache. Rafiki session admission uses
+the shared one-minute rate-limit wrapper, matching the internal session endpoint.
+
+Fresh databases apply the existing `006_uoa_reference_only.sql` profile removal
+once. Session migration 004 leaves those columns for 006; it also works when
+006 was already applied by an earlier release. The shipped 006 is unchanged.
+
+A browser holding an old JWT with copied profile fields first exchanges it for
+a validated reference-only token. It keeps the same session id and expiry before
+loading the live profile. Retry keeps the original credential in memory while
+UOA or the exchange is unavailable; copied profile claims are never persisted again.

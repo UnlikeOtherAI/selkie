@@ -30,6 +30,7 @@ export function App() {
   const [claims, setClaims] = useState<JWTClaims | null>(null);
   const [tokenForExchange] = useState(() => extractTokenFromHash() ?? getToken());
   const [checked, setChecked] = useState(false);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
  const [unavailable,setUnavailable]=useState(false);
  const [logoutPending,setLogoutPending]=useState(false);
   const navigate = useNavigate();
@@ -43,7 +44,21 @@ export function App() {
       else setToken(stored);
     }
     if (!stored || !isTokenValid(stored)) { setChecked(true); return; }
-    fetch("/auth/session", { headers: { Authorization: `Bearer ${stored}` }, cache: "no-store", redirect: "error" })
+    const previous = parseJWT(stored) as Record<string, unknown> | null;
+    const needsCleanup = previous && ["email", "display_name", "picture"].some(key => key in previous);
+    const reference = needsCleanup
+      ? fetch("/api/v1/auth/session", { headers: { Authorization: `Bearer ${stored}` }, cache: "no-store", redirect: "error" })
+        .then(async response => {
+          if (response.status === 401) return "";
+          if (!response.ok) throw new Error("Session cleanup unavailable");
+          const result: { token: string } = await response.json();
+          setToken(result.token);
+          return result.token;
+        })
+      : Promise.resolve(stored);
+    reference.then(token => token
+      ? fetch("/auth/session", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", redirect: "error" })
+      : new Response(null, { status: 401 }))
       .then(async (response) => {
         if (response.status === 401) { removeToken(); setChecked(true); return; }
         if (!response.ok) {
@@ -55,10 +70,10 @@ export function App() {
         setClaims(profile); setChecked(true);
         if (location.pathname === "/login") navigate("/admin", { replace: true });
       }).catch(() => setUnavailable(true));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionAttempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function retrySession() {
-    if (!logoutPending) { window.location.reload(); return; }
+    if (!logoutPending) { setUnavailable(false); setSessionAttempt(value => value + 1); return; }
     const response = await fetch("/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${getToken()}` }, redirect: "error" }).catch(() => null);
     if (response?.ok) { removeToken(); window.location.replace("/login"); }
   }
