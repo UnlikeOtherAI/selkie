@@ -73,5 +73,5 @@ func (h *CallbackHandler) ServeRafikiSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	h.auditInternalMintSession(ctx, r, userID)
-	writeJSON(w, 200, map[string]any{responseTokenField: token, "expires_at": expiresAt.UTC().Format(time.RFC3339)})
+	writeJSON(w, 200, map[string]any{responseTokenField: token, fieldExpiresAt: expiresAt.UTC().Format(time.RFC3339)})
 }

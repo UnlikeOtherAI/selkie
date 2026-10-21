@@ -113,7 +113,7 @@ func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request)
 	authMethods := []string{"email_password", "google"}
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"domain":                   domain,
+		fieldDomain:                domain,
 		"jwks_url":                 jwksURL,
 		"contact_email":            contactEmail,
 		"redirect_urls":            redirectURLs,

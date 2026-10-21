@@ -18,6 +18,8 @@ import (
 var errUOARefused = errors.New("UOA refused capability")
 
 const (
+	fieldDomain         = "domain"
+	fieldDisplayName    = "display_name"
 	fieldScope          = "scope"
 	fieldError          = "error"
 	capabilityRefresh   = "refresh"
@@ -100,7 +102,7 @@ func currentUOAProfile(ctx context.Context, cfg config.Config, subject string) (
 	if err != nil {
 		return nil, err
 	}
-	query := url.Values{"domain": {domain}, "user_id": {subject}}
+	query := url.Values{fieldDomain: {domain}, "user_id": {subject}}
 	var result struct {
 		Users []struct {
 			ID        string `json:"id"`

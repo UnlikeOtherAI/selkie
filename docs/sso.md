@@ -101,3 +101,7 @@ recorded revisions and are not evidence for this integration head.
 Browser callback exchange keeps the issued UOA claims and session reference.
 The callback handler retains its live profile cache. Rafiki session admission uses
 the shared one-minute rate-limit wrapper, matching the internal session endpoint.
+
+Fresh databases apply the existing `006_uoa_reference_only.sql` profile removal
+once. Session migration 004 leaves those columns for 006; it also works when
+006 was already applied by an earlier release. The shipped 006 is unchanged.
