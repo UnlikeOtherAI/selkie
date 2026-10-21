@@ -49,13 +49,16 @@ export function App() {
     const reference = needsCleanup
       ? fetch("/api/v1/auth/session", { headers: { Authorization: `Bearer ${stored}` }, cache: "no-store", redirect: "error" })
         .then(async response => {
+          if (response.status === 401) return "";
           if (!response.ok) throw new Error("Session cleanup unavailable");
           const result: { token: string } = await response.json();
           setToken(result.token);
           return result.token;
         })
       : Promise.resolve(stored);
-    reference.then(token => fetch("/auth/session", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", redirect: "error" }))
+    reference.then(token => token
+      ? fetch("/auth/session", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", redirect: "error" })
+      : new Response(null, { status: 401 }))
       .then(async (response) => {
         if (response.status === 401) { removeToken(); setChecked(true); return; }
         if (!response.ok) {
