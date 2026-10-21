@@ -54,7 +54,11 @@ func TestIdentityMigrationPreservesDeviceOwnershipAndScrubsProfiles(t *testing.T
 	if _, err = tx.Exec(ctx, `INSERT INTO mobile_handoff_codes(code_hash,user_id,expires_at) VALUES(sha256('old-handoff'::bytea),$1,now()+interval '1 minute')`, original); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"004_uoa_relying_party_sessions.sql", "005_bounded_broker_capabilities.sql"} {
+	for _, name := range []string{
+		"004_uoa_relying_party_sessions.sql", "005_bounded_broker_capabilities.sql",
+		"005_direct_home_peers.sql", "006_unadmitted_session_cleanup.sql",
+		"006_uoa_reference_only.sql", "007_session_cleanup_admission_window.sql",
+	} {
 		body, readErr := os.ReadFile("../../migrations/" + name)
 		if readErr != nil {
 			t.Fatal(readErr)
