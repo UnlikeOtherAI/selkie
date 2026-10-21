@@ -95,3 +95,9 @@ applied `006_uoa_reference_only.sql`: removing the already-absent profile column
 is idempotent. Shipped migrations are unchanged. Rehearse both startup histories
 before the coordinated release; the older deployment receipts describe their
 recorded revisions and are not evidence for this integration head.
+
+### Current integration checks
+
+Browser callback exchange keeps the issued UOA claims and session reference.
+The callback handler retains its live profile cache. Rafiki session admission uses
+the shared one-minute rate-limit wrapper, matching the internal session endpoint.
