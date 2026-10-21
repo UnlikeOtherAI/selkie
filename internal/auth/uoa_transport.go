@@ -20,6 +20,7 @@ var errUOARefused = errors.New("UOA refused capability")
 const (
 	fieldDomain         = "domain"
 	fieldDisplayName    = "display_name"
+	fieldPicture        = "picture"
 	fieldScope          = "scope"
 	fieldError          = "error"
 	capabilityRefresh   = "refresh"
