@@ -74,14 +74,22 @@ func TestReferenceSessionRemovesPersistedProfilesAndPreservesExpiry(t *testing.T
 	t.Parallel()
 	secret := "test-session-signing-secret"
 	expires := time.Now().Add(time.Hour).Unix()
-	old := jwt.MapClaims{"iss": Issuer, "sub": "local-reference", "aud": []string{AudienceAdmin}, "exp": expires, "iat": time.Now().Unix(), "email": "copied@example.com", "display_name": "Copied", "picture": "https://copied.test/image"}
+	old := jwt.MapClaims{"iss": Issuer, "sub": "local-reference", "aud": []string{AudienceAdmin}, "exp": expires, "iat": time.Now().Unix(), "jti": "source-session", "email": "copied@example.com", "display_name": "Copied", "picture": "https://copied.test/image"}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, old).SignedString([]byte(secret))
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := NewCallbackHandler(nil, config.Config{InternalSessionSecret: secret}, nil, nil, nil)
 	router := chi.NewRouter()
-	h.Mount(router)
+	// This unit exercises serialization after admission; real admission uses SessionManager.
+	validator := SessionValidatorFunc(func(_ context.Context, claims Claims) (Claims, error) {
+		if claims.SessionID != "source-session" {
+			return Claims{}, errSessionExpired
+		}
+		return claims, nil
+	})
+	router.With(Middleware(h.cfg, nil, nil, validator), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/session", h.ServeReferenceSession)
+	router.With(Middleware(h.cfg, nil, nil, validator), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/profile", h.ServeProfile)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
@@ -102,10 +110,13 @@ func TestReferenceSessionRemovesPersistedProfilesAndPreservesExpiry(t *testing.T
 			t.Fatal("profile persisted in replacement JWT")
 		}
 	}
+	if clean["jti"] != "source-session" {
+		t.Fatal("session reference lost")
+	}
 	if int64(clean["exp"].(float64)) != expires {
 		t.Fatal("migration extended authorization")
 	}
-	mobile, err := h.mintToken("local-reference", false, []string{AudienceMobile})
+	mobile, err := h.mintSessionToken("local-reference", false, "source-session", []string{AudienceMobile})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -37,7 +37,7 @@ const (
 	// binding for the callback.
 	pkceVerifierCookieName = "selkie_pkce_verifier"
 
-	// sessionTokenTTL is the lifetime of every session JWT mintToken issues.
+	// sessionTokenTTL is the lifetime of every session JWT mintSessionToken issues.
 	// Extracted so the mobile handoff exchange and the internal mint-session
 	// broker report an expiry that always tracks the signed token's exp.
 	sessionTokenTTL = 24 * time.Hour
@@ -92,8 +92,8 @@ func (h *CallbackHandler) Mount(r chi.Router) {
 	r.Post("/auth/debug-login/redeem", h.ServeDebugRedeem)
 	r.Get("/auth/dev-status", h.ServeDevStatus)
 	r.Get("/auth/dev-login", h.ServeDevLogin)
-	r.With(Middleware(h.cfg, h.audit, h.limiter), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/session", h.ServeReferenceSession)
-	r.With(Middleware(h.cfg, h.audit, h.limiter), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/profile", h.ServeProfile)
+	r.With(Middleware(h.cfg, h.audit, h.limiter, h.sessions), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/session", h.ServeReferenceSession)
+	r.With(Middleware(h.cfg, h.audit, h.limiter, h.sessions), RequireAudience(AudienceAdmin)).Get("/api/v1/auth/profile", h.ServeProfile)
 }
 
 // ServeLogin issues a fresh PKCE verifier cookie and redirects to the UOA
