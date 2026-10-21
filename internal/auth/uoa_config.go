@@ -137,7 +137,7 @@ func (h *CallbackHandler) ServeUOAConfig(w http.ResponseWriter, _ *http.Request)
 			"long_refresh_token_ttl_days":   30,
 		},
 		// Selkie is a single-user / single-tenant control plane; it does not
-		// consume UOA org or team membership (upsertUser only reads sub/email).
+		// consume UOA org or team membership (product references use only the stable subject).
 		// Disable org features so first-login skips org/team bootstrapping,
 		// which 500s on UOA when no org auto-create path is configured.
 		"org_features": map[string]any{

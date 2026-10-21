@@ -35,6 +35,7 @@ test.describe("System page", () => {
     await expect(claimsBlock).toContainText("is_super", { timeout: 5000 });
     await expect(claimsBlock).not.toContainText("agent.smith@dev.local");
     await expect(claimsBlock).not.toContainText("display_name");
+    await expect(claimsBlock).toContainText("jti");
   });
 
   test("audit log section is visible", async ({ page }) => {

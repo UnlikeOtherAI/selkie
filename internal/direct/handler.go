@@ -23,22 +23,23 @@ import (
 )
 
 type Handler struct {
-	db      *store.DB
-	cfg     config.Config
-	audit   *audit.Logger
-	limiter ratelimit.Limiter
-	slots   chan struct{}
+	db         *store.DB
+	cfg        config.Config
+	audit      *audit.Logger
+	limiter    ratelimit.Limiter
+	slots      chan struct{}
+	validators []auth.SessionValidator
 }
 
-func New(db *store.DB, cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter) *Handler {
-	return &Handler{db: db, cfg: cfg, audit: auditor, limiter: limiter, slots: make(chan struct{}, 32)}
+func New(db *store.DB, cfg config.Config, auditor *audit.Logger, limiter ratelimit.Limiter, validators ...auth.SessionValidator) *Handler {
+	return &Handler{db: db, cfg: cfg, audit: auditor, limiter: limiter, slots: make(chan struct{}, 32), validators: validators}
 }
 
 func (h *Handler) Mount(r chi.Router) {
 	r.Get("/api/v1/direct/home/{id}/peers", h.deviceAuthenticated(h.stream))
 	r.Post("/api/v1/direct/home/{id}/register", h.deviceAuthenticated(h.register))
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter))
+		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter, h.validators...))
 		r.Get("/api/v1/direct/{id}/peers", h.stream)
 		r.With(auth.RequireAudience(auth.AudienceAdmin)).Post("/api/v1/direct/{id}/home", h.register)
 	})

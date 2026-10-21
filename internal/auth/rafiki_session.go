@@ -66,7 +66,7 @@ func (h *CallbackHandler) ServeRafikiSession(w http.ResponseWriter, r *http.Requ
 	if limit := now.Add(5 * time.Minute); expiresAt.After(limit) {
 		expiresAt = limit
 	}
-	scoped := sessionClaims{DirectHomeID: req.HomeDeviceID, RegisteredClaims: jwt.RegisteredClaims{Issuer: Issuer, Subject: userID, Audience: jwt.ClaimStrings{AudienceMobile}, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(expiresAt)}}
+	scoped := sessionClaims{CapabilityKind: RafikiDirectCapability, DirectHomeID: req.HomeDeviceID, RegisteredClaims: jwt.RegisteredClaims{Issuer: Issuer, Subject: userID, Audience: jwt.ClaimStrings{AudienceMobile}, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(expiresAt)}}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, scoped).SignedString([]byte(h.cfg.InternalSessionSecret))
 	if err != nil {
 		writeJSONError(w, 503, "session unavailable")

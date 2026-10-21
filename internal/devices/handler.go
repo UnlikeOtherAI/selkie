@@ -44,28 +44,33 @@ const (
 const outcomeSuccess = "success"
 
 type Handler struct {
-	db      *store.DB
-	logger  *zap.Logger
-	cfg     config.Config
-	overlay *overlay.Allocator
-	audit   *audit.Logger
-	hub     HubSyncer
-	limiter ratelimit.Limiter
+	validator auth.SessionValidator
+	db        *store.DB
+	logger    *zap.Logger
+	cfg       config.Config
+	overlay   *overlay.Allocator
+	audit     *audit.Logger
+	hub       HubSyncer
+	limiter   ratelimit.Limiter
 }
 
 // New creates a devices Handler with the given dependencies.
-func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator, auditor *audit.Logger, hub HubSyncer, limiter ratelimit.Limiter) *Handler {
+func New(db *store.DB, logger *zap.Logger, cfg config.Config, alloc *overlay.Allocator, auditor *audit.Logger, hub HubSyncer, limiter ratelimit.Limiter, validators ...auth.SessionValidator) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	return &Handler{db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor, hub: hub, limiter: limiter}
+	validator := auth.SessionValidator(auth.NewSessionManager(db, cfg))
+	if len(validators) > 0 {
+		validator = validators[0]
+	}
+	return &Handler{validator: validator, db: db, logger: logger, cfg: cfg, overlay: alloc, audit: auditor, hub: hub, limiter: limiter}
 }
 
 // Mount registers device routes on the given router behind auth middleware.
 func (h *Handler) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter))
+		r.Use(auth.Middleware(h.cfg, h.audit, h.limiter, h.validator))
 		r.Use(auth.RequireAudience(auth.AudienceAdmin))
 		r.Post("/api/v1/auth/pair/start", h.handlePairStart)
 		r.Get("/api/v1/auth/pair/status", h.handlePairStatus)

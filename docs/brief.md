@@ -66,7 +66,7 @@ workflows. ([OpenID Foundation][3])
 > For this project the OIDC role is played by
 > **authentication.unlikeotherai.com**, which is not strictly OIDC-compliant
 > but exposes an equivalent OAuth 2.0 authorization-code flow with
-> signed-config trust and HS256-signed JWT access tokens. See
+> signed RS256 integration configuration and confidential scoped sessions. See
 > [sso.md](sso.md).
 
 ### Policy Engine: OPA (Optional but Recommended)

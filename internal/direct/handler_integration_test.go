@@ -100,13 +100,13 @@ func TestPostgresDirectOwnerGrantExpiryRenewalAndRevocation(t *testing.T) {
 	secret := strings.Repeat("signed-session-secret-", 3)
 	cfg := config.Config{InternalSessionSecret: secret, WGServerPublicKey: base64.StdEncoding.EncodeToString(bytesOf(11)), WGServerEndpoint: "relay.selkie.live", WGServerPort: 51820, WGOverlayCIDR: "10.101.0.0/16", RafikiHomeDeviceID: home}
 	router := chi.NewRouter()
-	direct.New(db, cfg, nil, ratelimit.NewMemoryLimiter()).Mount(router)
+	direct.New(db, cfg, nil, ratelimit.NewMemoryLimiter(), fixtureSessionValidator()).Mount(router)
 	allocator, allocErr := overlay.New(db.Pool, cfg.WGOverlayCIDR)
 	if allocErr != nil {
 		t.Fatal(allocErr)
 	}
 	hub := &hubSpy{}
-	mobileapi.New(db, nil, cfg, allocator, nil, hub, ratelimit.NewMemoryLimiter()).Mount(router)
+	mobileapi.New(db, nil, cfg, allocator, nil, hub, ratelimit.NewMemoryLimiter(), fixtureSessionValidator()).Mount(router)
 	server := httptest.NewServer(router)
 	defer server.Close()
 	ordinary := insertDevice(ctx, t, db, guest, "ordinary-phone", "ios", network+"5", "unused", 13)
