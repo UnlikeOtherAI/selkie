@@ -59,20 +59,20 @@ jobs:
           ssh -i "$HOME/.ssh/id_deploy" -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes \
             "$DEPLOY_HOST" "bash -s -- '$DEPLOY_PATH' '$GITHUB_SHA'" <<'REMOTE'
-          set -eu
+          set -euo pipefail
           deploy_path=$1
           revision=$2
           archive="/tmp/selkie-image-${revision}.tar.gz"
+          trap 'rm -f "$archive"' EXIT
           cd "$deploy_path"
 
           previous_image=$(docker inspect --format '{{.Config.Image}}' selkie-server 2>/dev/null || true)
           gunzip -c "$archive" | docker load
-          rm -f "$archive"
 
-          if ! SELKIE_IMAGE="selkie-server:${revision}" ./ops/compose-prod.sh up -d; then
+          if ! SELKIE_IMAGE="selkie-server:${revision}" ./ops/compose-prod.sh up -d --no-build --pull never; then
             echo "New server image failed to start" >&2
             if [ -n "$previous_image" ]; then
-              SELKIE_IMAGE="$previous_image" ./ops/compose-prod.sh up -d
+              SELKIE_IMAGE="$previous_image" ./ops/compose-prod.sh up -d --no-build --pull never
             fi
             exit 1
           fi
@@ -90,7 +90,7 @@ jobs:
           if [ "$ready" -ne 1 ]; then
             echo "Readiness failed; restoring previous server image" >&2
             if [ -n "$previous_image" ]; then
-              SELKIE_IMAGE="$previous_image" ./ops/compose-prod.sh up -d
+              SELKIE_IMAGE="$previous_image" ./ops/compose-prod.sh up -d --no-build --pull never
             fi
             exit 1
           fi
