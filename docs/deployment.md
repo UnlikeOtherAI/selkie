@@ -61,7 +61,7 @@ other projects' compose files or Caddy blocks.
 All commands run as `root` on the host.
 
 1. **Source.** Sync the repo to `/srv/selkie` (rsync from a clean checkout, or
-   `git clone`). The build context is `/srv/selkie` (Dockerfile at its root);
+   `git clone`). The deployment files live at `/srv/selkie` (Dockerfile at its root);
    the compose file lives at `ops/docker-compose.prod.yml`.
 
 2. **Database.** Create a dedicated role + database on the shared instance
@@ -108,7 +108,7 @@ All commands run as `root` on the host.
 
    ```sh
    cd /srv/selkie
-   ./ops/compose-prod.sh up -d --build
+   SELKIE_IMAGE=selkie-server:<commit-sha> ./ops/compose-prod.sh up -d
    ```
 
    The `--env-file .env` flag is **required**: compose otherwise interpolates
@@ -117,20 +117,22 @@ All commands run as `root` on the host.
 
 ## Continuous deployment
 
-Every push to `main` auto-deploys to the Hetzner host via
+Every push to `main` builds the server image on a GitHub Actions runner, tags it with the commit SHA, and auto-deploys that immutable image to the Hetzner host via
 `.github/workflows/deploy.yml` (`deploy`), with its own non-cancelling
 concurrency group so a rapid second push cannot abort an in-flight deploy. It
 can also be run manually from the Actions tab (`workflow_dispatch`).
 
 Deploy is **not** gated on the `ci` workflow: `ci` also covers the iOS app
 (swiftlint) and other concerns orthogonal to the server, so gating would block
-server deploys on unrelated failures. The safety net is the build itself —
-`docker compose up -d --build` only swaps containers after a successful image
-build, so a commit that fails to compile leaves the running server untouched.
+server deploys on unrelated failures. Actions completes the image build before
+connecting to production. The host loads the commit-tagged image and starts the
+stack without compiling project source. If readiness fails, the deployment
+restores the previously running server image when one exists.
 
-The deploy job: rsyncs the repo to `/srv/selkie` (preserving `.env`), runs
-`docker compose ... up -d --build`, then polls
-`https://api.selkie.live/readyz` and fails the run if it never goes green.
+The deploy job rsyncs deployment files to `/srv/selkie` (preserving `.env`),
+transfers the compressed image archive, loads it, starts the stack with that
+immutable tag, then polls `https://api.selkie.live/readyz` and fails the run if
+it never goes green.
 
 Required GitHub repo secrets:
 
@@ -160,7 +162,7 @@ cd /srv/selkie
 ./ops/compose-prod.sh <cmd>
 ```
 
-- redeploy after a source change: `... up -d --build`
+- redeploy after loading a server image: `SELKIE_IMAGE=selkie-server:<commit-sha> ./ops/compose-prod.sh up -d`
 - logs: `docker logs selkie-server`
 - health: `docker exec selkie-server wget -qO- http://127.0.0.1:8080/healthz`
 - WireGuard state: `docker exec selkie-server wg show wg0`

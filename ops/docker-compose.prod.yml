@@ -12,7 +12,7 @@
 # Selkie brings its own private Redis, coturn, and the WireGuard hub (run by
 # the `server` process itself inside its own network namespace).
 #
-# Deployed from /srv/selkie on the host:  docker compose -f ops/docker-compose.prod.yml up -d --build
+# Built in GitHub Actions and loaded on /srv/selkie; the host does not build images.
 #
 # `edge` and `db` are created by /srv/infra/docker-compose.yml and joined here
 # as external networks. `selkie-internal` is private to this stack.
@@ -41,10 +41,7 @@ services:
       retries: 10
 
   server:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    image: selkie-server:latest
+    image: ${SELKIE_IMAGE:-selkie-server:latest}
     container_name: selkie-server
     restart: unless-stopped
     # Bridge networking (not host) so the shared Caddy can reach the server by
