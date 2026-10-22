@@ -1,12 +1,7 @@
 name: deploy
 
-# Auto-deploy to the shared Hetzner production host (178.105.82.46) on every
-# push to main. Deploy is intentionally NOT gated on the `ci` workflow: ci also
-# covers the iOS app (swiftlint) and other concerns that are orthogonal to the
-# server deploy, so gating would block deploys on unrelated failures. Safety
-# net: `docker compose up -d --build` only swaps containers after a successful
-# image build, so a commit that fails to compile leaves the running server
-# untouched; the final readiness check then fails the run loudly.
+# Build the server image on GitHub Actions and transport the immutable commit
+# tag to production. The shared Hetzner host only loads and starts the image.
 on:
   push:
     branches: [main]
@@ -30,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: build immutable server image
+        run: |
+          docker build --pull -t "selkie-server:${GITHUB_SHA}" .
+          docker save "selkie-server:${GITHUB_SHA}" | gzip -1 > /tmp/selkie-image.tar.gz
+
       - name: configure ssh
         env:
           DEPLOY_KEY: ${{ secrets.SELKIE_DEPLOY_SSH_KEY }}
@@ -41,7 +41,7 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: rsync source to server
+      - name: sync deployment files
         run: |
           rsync -az --delete \
             --exclude '/.git' --exclude '/.worktrees' --exclude '/.build' --exclude 'node_modules' \
@@ -50,20 +50,48 @@ jobs:
             --exclude '/*.tar' --exclude '.env' \
             -e "ssh -i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes" \
             ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
+          scp -i "$HOME/.ssh/id_deploy" -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes \
+            /tmp/selkie-image.tar.gz "$DEPLOY_HOST:/tmp/selkie-image-${GITHUB_SHA}.tar.gz"
 
-      - name: build & restart stack
+      - name: load, deploy, and verify
         run: |
           ssh -i "$HOME/.ssh/id_deploy" -o IdentitiesOnly=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes \
-            "$DEPLOY_HOST" \
-            "cd $DEPLOY_PATH && ./ops/compose-prod.sh up -d --build"
+            "$DEPLOY_HOST" "bash -s -- '$DEPLOY_PATH' '$GITHUB_SHA'" <<'REMOTE'
+          set -euo pipefail
+          deploy_path=$1
+          revision=$2
+          archive="/tmp/selkie-image-${revision}.tar.gz"
+          trap 'rm -f "$archive"' EXIT
+          cd "$deploy_path"
 
-      - name: health check
-        run: |
+          previous_image=$(docker inspect --format '{{.Config.Image}}' selkie-server 2>/dev/null || true)
+          gunzip -c "$archive" | docker load
+
+          if ! SELKIE_IMAGE="selkie-server:${revision}" ./ops/compose-prod.sh up -d --no-build --pull never; then
+            echo "New server image failed to start" >&2
+            if [ -n "$previous_image" ]; then
+              SELKIE_IMAGE="$previous_image" ./ops/compose-prod.sh up -d --no-build --pull never
+            fi
+            exit 1
+          fi
+
+          ready=0
           for i in $(seq 1 30); do
             if curl -fsS --max-time 5 https://api.selkie.live/readyz >/dev/null; then
-              echo "readyz OK after $((i * 4))s"; exit 0
+              echo "readyz OK after $((i * 4))s"
+              ready=1
+              break
             fi
             sleep 4
           done
-          echo "::error::health check failed — api.selkie.live/healthz not OK"; exit 1
+
+          if [ "$ready" -ne 1 ]; then
+            echo "Readiness failed; restoring previous server image" >&2
+            if [ -n "$previous_image" ]; then
+              SELKIE_IMAGE="$previous_image" ./ops/compose-prod.sh up -d --no-build --pull never
+            fi
+            exit 1
+          fi
+          REMOTE
